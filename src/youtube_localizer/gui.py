@@ -368,7 +368,9 @@ def project_workspace_from_output(line: str, output_directory: str | Path) -> Pa
     return project
 
 
-def progress_update_from_output(line: str, *, provider: str) -> tuple[float, str] | None:
+def progress_update_from_output(
+    line: str, *, provider: str, enhancement: bool = False,
+) -> tuple[float, str] | None:
     """Map the pipeline's real progress messages to a single GUI progress percentage."""
     if "Preflight ready:" in line:
         return 2.0, "正在检查硬件、离线模型和磁盘空间…"
@@ -382,9 +384,20 @@ def progress_update_from_output(line: str, *, provider: str) -> tuple[float, str
         if eta := _DOWNLOAD_ETA_RE.search(line):
             details.append(f"剩余 {eta.group(1)}")
         suffix = f" · {' · '.join(details)}" if details else ""
-        if provider == "download_only":
+        if provider == "download_only" and not enhancement:
             return percent, f"正在下载原视频：{percent:.1f}%{suffix}"
-        return percent * 0.22, f"正在下载原视频：{percent:.1f}%{suffix}"
+        return percent * (0.10 if enhancement else 0.22), f"正在下载原视频：{percent:.1f}%{suffix}"
+
+    if "AI super resolution:" in line:
+        match = re.search(r"\(([\d.]+)%\)", line)
+        percent = min(100.0, float(match.group(1))) if match else 0.0
+        details = ""
+        if speed := re.search(r"([\d.]+) fps; ETA (\d+)s", line):
+            details = f" · {speed.group(1)} 帧/秒 · 预计剩余 {speed.group(2)} 秒"
+        if "restored checkpoint" in line:
+            details = " · 已恢复完成片段"
+        span = 88.0 if provider == "download_only" else 12.0
+        return 10.0 + span * percent / 100, f"AI 超分辨率：{percent:.1f}%{details}"
 
     if "Processing audio with duration" in line:
         return 24.0, "正在识别原语言语音…"
@@ -3728,6 +3741,7 @@ class LocalizerWindow:
         self.progress.start(10)
         self.stop_requested = False
         self.active_provider = provider
+        self.active_enhancement = SUPER_RESOLUTION_MODES[self.enhancement_label.get()] != "off"
         self._progress_value = 0.0
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
@@ -4149,7 +4163,10 @@ class LocalizerWindow:
         queue_index: int | None = None,
         queue_position: int | None = None,
     ) -> None:
-        update = progress_update_from_output(line, provider=self.active_provider)
+        update = progress_update_from_output(
+            line, provider=self.active_provider,
+            enhancement=getattr(self, "active_enhancement", False),
+        )
         if update is None:
             return
         value, message = update

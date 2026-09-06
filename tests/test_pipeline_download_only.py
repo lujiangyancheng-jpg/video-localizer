@@ -10,6 +10,38 @@ from youtube_localizer.pipeline import load_project_metadata, process_pipeline
 from youtube_localizer.utils.files import load_json
 
 
+def test_render_source_rejects_stale_enhancement_after_settings_change(tmp_path):
+    import pytest
+
+    from youtube_localizer.errors import LocalizerError
+    from youtube_localizer.pipeline import render_source
+    from youtube_localizer.utils.files import atomic_write_json
+
+    project = ProjectPaths(tmp_path / "stale")
+    project.create()
+    original = project.source / "source_video.mp4"
+    original.write_bytes(b"original")
+    project.enhanced_source.parent.mkdir(parents=True, exist_ok=True)
+    project.enhanced_source.write_bytes(b"old-enhancement")
+    metadata = SourceMetadata(
+        source_type="local",
+        source_input=str(original),
+        video_id="test",
+        title="test",
+        width=1920,
+        height=1080,
+        duration=1,
+    )
+    atomic_write_json(project.metadata, metadata.model_dump(mode="json"))
+    lowered = AppConfig.model_validate(
+        {"enhancement": {"mode": "general"}, "render": {"output_height": 720}}
+    )
+    assert render_source(project, lowered) == original
+    changed = AppConfig.model_validate({"enhancement": {"mode": "animation"}})
+    with pytest.raises(LocalizerError, match="Resume processing"):
+        render_source(project, changed)
+
+
 def test_download_only_stops_after_high_quality_acquisition(tmp_path) -> None:
     project = ProjectPaths(tmp_path / "project")
     project.create()

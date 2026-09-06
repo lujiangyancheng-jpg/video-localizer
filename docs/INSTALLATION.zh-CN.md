@@ -16,7 +16,7 @@
 
 1. 在 `dist` 中选择同一版本的 Standard 或 Complete 基础安装包。
 2. Standard 只需下载一个 `.exe`。Complete 和独立模型包仍需把 `.exe` 与其全部同名 `.bin` 分卷放在同一个文件夹，不要重命名或遗漏分卷。
-3. 双击 Standard 时，在“选择本地模型”页按需勾选 Whisper Small、Whisper Medium、Local AI 或 AI 超分辨率；全新安装默认选择 Small，已有 Whisper 的升级不会重复选择。安装器会从前三段兼容的组件 Release 下载所选内容并校验 SHA-256，例如程序 `0.7.0.13` 使用 `0.7.0` 组件包。主动取消全部 Whisper 时会确认仅安装基础下载功能。
+3. 双击 Standard 时，在“选择本地模型”页按需勾选 Whisper Small、Whisper Medium、Local AI 或 AI 超分辨率；全新安装默认选择 Small，已有 Whisper 的升级不会重复选择。安装器会从前三段兼容的组件 Release 下载所选内容并校验 SHA-256，例如程序 `0.7.0.14` 使用 `0.7.0` 组件包。主动取消全部 Whisper 时会确认仅安装基础下载功能。
 4. 若还没有 Whisper，选择一个模型安装包：`Whisper-Small-Model-Setup.exe` 或 `Whisper-Medium-Model-Setup.exe`。
 5. 把模型包安装到与基础程序相同的文件夹；默认位置通常正确。需要本地 AI 而未使用 Complete 时，安装前三段兼容版本的 `Local-AI-Model-Setup.exe` 与全部分卷。
 6. 从开始菜单或桌面打开 **YouTube Chinese Localizer**。
