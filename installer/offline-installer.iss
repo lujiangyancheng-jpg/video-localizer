@@ -5,7 +5,7 @@
   #define OutputDir "..\dist"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.7.0.13"
+  #define AppVersion "0.7.0.14"
 #endif
 #ifndef ModelPackVersion
   #define ModelPackVersion "0.7.0"
@@ -98,7 +98,11 @@ Name: "{userappdata}\YouTube Chinese Localizer"
 Name: "{userdocs}\YouTube Localizer Projects"
 
 [Files]
-Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "models\*,runtime\ollama\*,runtime\ffmpeg-nvenc-compat\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Model data survives base-program removal; optional pack uninstallers own their components.
+Source: "{#StageDir}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall
+Source: "{#StageDir}\runtime\ollama\*"; DestDir: "{app}\runtime\ollama"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall skipifsourcedoesntexist
+Source: "{#StageDir}\runtime\ffmpeg-nvenc-compat\*"; DestDir: "{app}\runtime\ffmpeg-nvenc-compat"; Flags: ignoreversion recursesubdirs createallsubdirs uninsneveruninstall skipifsourcedoesntexist
 ; Keep the visible shortcut target outside a custom Unicode install directory. The relay launcher
 ; resolves the true installation root through the per-user uninstall record using Unicode APIs.
 Source: "{#StageDir}\Localize Studio.exe"; DestDir: "{userappdata}\YouTube Chinese Localizer"; DestName: "Localize Studio Launcher.exe"; Flags: ignoreversion

@@ -130,10 +130,10 @@ $LauncherProcess = Start-Process -FilePath $Launcher -ArgumentList "--verify" -P
 if ($LauncherProcess.ExitCode -ne 0) { throw "Installed native GUI launcher verification failed." }
 Write-Host "installed native GUI launcher: ok"
 
-if (-not $IsCompletePackage) {
-    Write-Host "Standard package verification complete; install a Whisper model pack before creating subtitles."
-    return
-}
+& $Python -c "from pathlib import Path; from youtube_localizer.installation import verify_optional_components; print('Verified optional components:', ', '.join(verify_optional_components(Path(r'$Root'))) or 'none installed')"
+if ($LASTEXITCODE -ne 0) { throw "An installed optional component is incomplete. Reinstall that component." }
+
+if (-not (Test-Path -LiteralPath $Ollama)) { return }
 
 if ($SkipInference) {
     return

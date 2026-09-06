@@ -302,10 +302,28 @@ def rendered_output(project: ProjectPaths, config: AppConfig) -> Path:
     return project.hardsub_output(target_code)
 
 
+def enhancement_config_hash(config: AppConfig, target_height: int) -> str:
+    return stable_hash({
+        "pipeline_version": 2, "enhancement": config.enhancement,
+        "target_height": target_height, "render": config.render,
+    })
+
+
 def render_source(project: ProjectPaths, config: AppConfig) -> Path:
-    if config.enhancement.mode != "off" and project.enhanced_source.is_file():
+    source = find_source_video(project)
+    if config.enhancement.mode == "off":
+        return source
+    metadata = load_project_metadata(project)
+    target = super_resolution_target_height(metadata.height or 0, config.render, config.enhancement)
+    if target <= (metadata.height or 0):
+        return source
+    if PipelineState(project.state_file).can_skip(
+        "enhance", input_hash=hash_file(source),
+        config_hash=enhancement_config_hash(config, target),
+        output_files=[project.enhanced_source],
+    ):
         return project.enhanced_source
-    return find_source_video(project)
+    raise LocalizerError("Enhanced video does not match current settings. Resume processing first.")
 
 
 def softsub_output(project: ProjectPaths, config: AppConfig) -> Path:
@@ -924,13 +942,7 @@ def process_pipeline(
                 )
             else:
                 enhance_input_hash = hash_file(source_video)
-                enhance_config_hash = stable_hash(
-                    {
-                        "enhancement": config.enhancement,
-                        "target_height": target_height,
-                        "render": config.render,
-                    }
-                )
+                enhance_config_hash = enhancement_config_hash(config, target_height)
                 if not state.can_skip(
                     "enhance",
                     input_hash=enhance_input_hash,
@@ -955,6 +967,7 @@ def process_pipeline(
                                 render=config.render,
                                 enhancement=config.enhancement,
                                 working_directory=project.temp / "super_resolution",
+                                force="enhance" in force_steps,
                             )
                         )
                         validate_rendered_video(

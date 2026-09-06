@@ -89,9 +89,10 @@ powershell -ExecutionPolicy Bypass -File .\installer\test_offline_install.ps1 `
 The installer also adds **Verify YouTube Localizer Installation** to the Start menu. It validates
 the installed asset sizes and SHA-256 hashes before loading the desktop application and local
 base assets. The shortcut skips the longer Qwen inference; run the command above without
-`-SkipInference` for the Complete release check. Install a Whisper model pack afterward; its
-installer validates the model checksum before it is packaged. Upgrading from Complete to Standard
-removes the Complete-only local AI files during installation.
+`-SkipInference` to skip inference while retaining file/hash checks. Installed Whisper and Local AI
+packs are checked on Standard too. Re-run the latest base installer to repair program files and
+retain models. New base-install records preserve model data on uninstall; historical uninstall
+records may still own old bundled models, so use an in-place upgrade for older installations.
 
 Large generated models, staging files, and installer binaries are intentionally ignored by Git.
 Only the reproducible builder, license inventory, and code are committed.

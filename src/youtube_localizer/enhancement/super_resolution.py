@@ -5,14 +5,20 @@ import shutil
 import struct
 import subprocess
 import tempfile
+from contextlib import suppress
 from pathlib import Path
+from time import monotonic
 from typing import BinaryIO
 
 from ..config import EnhancementConfig, RenderConfig
 from ..errors import ExternalToolError, LocalizerError
+from ..models import OutputArtifact
 from ..rendering.ffmpeg import resolve_render_backend, video_codec_arguments
 from ..resource_gate import heavy_workload_slot
 from ..resources import super_resolution_runtime
+from ..state import build_output_artifact, output_artifact_is_current
+from ..utils.files import atomic_write_json, atomic_write_text, load_json
+from ..utils.hashing import stable_hash
 from ..utils.subprocesses import (
     hidden_console_kwargs,
     resolve_executable,
@@ -25,6 +31,8 @@ MODEL_DIRECTORIES = {
     "general": "models-upconv_7_photo",
     "animation": "models-cunet",
 }
+_VERIFIED_DEVICES: dict[str, int] = {}
+SEGMENT_FRAMES = 300
 
 
 def super_resolution_target_height(
@@ -42,24 +50,48 @@ def super_resolution_target_height(
     return max(source_height, target)
 
 
-def build_frame_extract_command(source: Path, *, ffmpeg: str = "ffmpeg") -> list[str]:
-    return [
+def build_frame_extract_command(
+    source: Path,
+    *,
+    ffmpeg: str = "ffmpeg",
+    frame_rate: float | None = None,
+    start_frame: int = 0,
+    frame_limit: int | None = None,
+) -> list[str]:
+    command = [
         ffmpeg,
         "-hide_banner",
         "-loglevel",
         "error",
-        "-i",
-        str(source),
-        "-map",
-        "0:v:0",
-        "-fps_mode",
-        "passthrough",
-        "-f",
-        "image2pipe",
-        "-vcodec",
-        "png",
-        "pipe:1",
     ]
+    if frame_rate is not None and start_frame:
+        command.extend(["-ss", f"{start_frame / frame_rate:.9f}"])
+    command.extend(
+        [
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+        ]
+    )
+    if frame_rate is not None:
+        # Normalize timestamps before inference, including variable-frame-rate sources.
+        filters = f"fps={frame_rate:.6f},trim=start_frame=0"
+        if frame_limit is not None:
+            filters += f":end_frame={frame_limit}"
+        command.extend(["-vf", filters + ",setpts=PTS-STARTPTS"])
+    command.extend(
+        [
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "image2pipe",
+            "-vcodec",
+            "png",
+            "pipe:1",
+        ]
+    )
+    return command
 
 
 def build_upscaler_command(
@@ -107,7 +139,9 @@ def _run_upscaler_batch(
     selected_gpu: int | None,
 ) -> int:
     """Run one batch and probe alternate Vulkan devices if the preferred GPU crashes."""
-    candidates = [selected_gpu] if selected_gpu is not None else [0, 1, 2, 3, -1]
+    candidates = list(
+        dict.fromkeys(([selected_gpu] if selected_gpu is not None else []) + [0, 1, 2, 3, -1])
+    )
     failures: list[str] = []
     for gpu_id in candidates:
         if output_directory.exists():
@@ -131,8 +165,6 @@ def _run_upscaler_batch(
             return gpu_id
         except ExternalToolError as exc:
             failures.append(f"device {gpu_id}: {exc}")
-            if selected_gpu is not None:
-                break
             LOGGER.warning("AI upscaler could not use Vulkan device %s; trying fallback.", gpu_id)
     detail = failures[-1] if failures else "no compatible device was reported"
     raise LocalizerError(
@@ -150,6 +182,7 @@ def build_enhanced_encode_command(
     source_audio_codec: str,
     render: RenderConfig,
     ffmpeg: str,
+    include_audio: bool = True,
 ) -> list[str]:
     command = [
         ffmpeg,
@@ -165,25 +198,33 @@ def build_enhanced_encode_command(
         "png",
         "-i",
         "pipe:0",
-        "-i",
-        str(source),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a?",
-        "-vf",
-        f"scale=-2:{target_height}:flags=lanczos",
-        "-c:v",
-        render.codec,
-        *video_codec_arguments(render),
-        "-pix_fmt",
-        "yuv420p",
     ]
-    if render.copy_audio_when_possible and source_audio_codec.casefold() == "aac":
+    if include_audio:
+        command.extend(["-i", str(source)])
+    filters = f"scale=-2:{target_height}:flags=lanczos"
+    if render.output_fps is not None and render.output_fps < frame_rate:
+        filters += f",fps={render.output_fps}"
+    command.extend(
+        [
+            "-map",
+            "0:v:0",
+            "-vf",
+            filters,
+            "-c:v",
+            render.codec,
+            *video_codec_arguments(render),
+            "-pix_fmt",
+            "yuv420p",
+        ]
+    )
+    if include_audio:
+        command.extend(["-map", "1:a?"])
+    if include_audio and render.copy_audio_when_possible and source_audio_codec.casefold() == "aac":
         command.extend(["-c:a", "copy"])
-    else:
+    elif include_audio:
         command.extend(["-c:a", render.audio_codec, "-b:a", render.audio_bitrate])
-    command.extend(["-shortest"])
+    if include_audio:
+        command.extend(["-shortest"])
     if render.faststart:
         command.extend(["-movflags", "+faststart"])
     command.append(str(output))
@@ -234,7 +275,7 @@ def _adaptive_batch_frames(
     # Keep decoded/upscaled PNG batches near 320 MiB on ordinary machines.  Four bytes per
     # pixel is conservative enough for the temporary input and output directories together.
     estimate_per_frame = max(1, target_width * target_height * 4)
-    return max(4, min(24, (320 * 1024**2) // estimate_per_frame))
+    return max(1, min(24, (320 * 1024**2) // estimate_per_frame))
 
 
 def _process_error(stderr_file: BinaryIO, fallback: str) -> str:
@@ -243,7 +284,7 @@ def _process_error(stderr_file: BinaryIO, fallback: str) -> str:
     return detail or fallback
 
 
-def enhance_video(
+def _enhance_video_stream(
     source: Path,
     output: Path,
     *,
@@ -256,6 +297,10 @@ def enhance_video(
     enhancement: EnhancementConfig,
     working_directory: Path,
     ffmpeg: str = "ffmpeg",
+    start_frame: int = 0,
+    frame_limit: int | None = None,
+    total_frames: int = 0,
+    include_audio: bool = True,
 ) -> Path:
     """Restore video frames in bounded batches and encode one continuous enhanced MP4."""
     if enhancement.mode == "off":
@@ -299,7 +344,14 @@ def enhance_video(
         render.model_copy(update={"crf": max(10, render.crf - 3)}),
         ffmpeg,
     )
-    extractor_command = build_frame_extract_command(source, ffmpeg=ffmpeg)
+    frame_rate = min(frame_rate, render.output_fps or frame_rate)
+    extractor_command = build_frame_extract_command(
+        source,
+        ffmpeg=ffmpeg,
+        frame_rate=frame_rate,
+        start_frame=start_frame,
+        frame_limit=frame_limit,
+    )
     encoder_command = build_enhanced_encode_command(
         source,
         temp_output,
@@ -308,16 +360,18 @@ def enhance_video(
         source_audio_codec=source_audio_codec,
         render=active_render,
         ffmpeg=active_ffmpeg,
+        include_audio=include_audio,
     )
     extractor_command[0] = resolve_executable(extractor_command[0]) or extractor_command[0]
     encoder_command[0] = resolve_executable(encoder_command[0]) or encoder_command[0]
     batch_frames = _adaptive_batch_frames(
         source_width,
         source_height,
-        target_height,
+        source_height * active_enhancement.scale,
         enhancement.batch_frames,
     )
-    expected_frames = round(duration * frame_rate) if duration > 0 else 0
+    expected_frames = total_frames or (round(duration * frame_rate) if duration > 0 else 0)
+    started = monotonic()
     LOGGER.info(
         "AI super resolution: %sp -> %sp, %s model, %s-frame bounded batches.",
         source_height,
@@ -330,7 +384,10 @@ def enhance_video(
     encoder: subprocess.Popen[bytes] | None = None
     with heavy_workload_slot("AI super resolution", kind="compute"):
         try:
-            with tempfile.TemporaryFile() as extractor_stderr, tempfile.TemporaryFile() as encoder_stderr:
+            with (
+                tempfile.TemporaryFile() as extractor_stderr,
+                tempfile.TemporaryFile() as encoder_stderr,
+            ):
                 extractor = subprocess.Popen(
                     extractor_command,
                     shell=False,
@@ -349,7 +406,8 @@ def enhance_video(
                 assert extractor.stdout is not None
                 assert encoder.stdin is not None
                 completed = 0
-                selected_gpu: int | None = None
+                device_key = f"{executable.resolve()}:{executable.stat().st_mtime_ns}"
+                selected_gpu: int | None = _VERIFIED_DEVICES.get(device_key)
                 while True:
                     names: list[str] = []
                     for _ in range(batch_frames):
@@ -370,6 +428,7 @@ def enhance_video(
                         frame_count=len(names),
                         selected_gpu=selected_gpu,
                     )
+                    _VERIFIED_DEVICES[device_key] = selected_gpu
                     for name in names:
                         enhanced = output_directory / name
                         if not enhanced.is_file():
@@ -380,14 +439,18 @@ def enhance_video(
                     encoder.stdin.flush()
                     completed += len(names)
                     percent = (
-                        min(100.0, completed / expected_frames * 100)
+                        min(99.9, (start_frame + completed) / expected_frames * 100)
                         if expected_frames
                         else 0.0
                     )
+                    speed = completed / max(0.001, monotonic() - started)
+                    eta = max(0, expected_frames - start_frame - completed) / speed
                     LOGGER.info(
-                        "AI super resolution: %s frames complete%s.",
-                        completed,
+                        "AI super resolution: %s frames complete%s; %.2f fps; ETA %.0fs.",
+                        start_frame + completed,
                         f" ({percent:.1f}%)" if expected_frames else "",
+                        speed,
+                        eta,
                     )
                     shutil.rmtree(input_directory)
                     shutil.rmtree(output_directory)
@@ -409,6 +472,10 @@ def enhance_video(
                         + _process_error(encoder_stderr, "No FFmpeg error detail was returned."),
                         command=encoder_command,
                     )
+                if frame_limit is not None and completed != frame_limit:
+                    raise LocalizerError(
+                        f"Enhanced segment is incomplete: expected {frame_limit} frames, got {completed}."
+                    )
         except BaseException:
             for process in (extractor, encoder):
                 if process is not None and process.poll() is None:
@@ -423,4 +490,133 @@ def enhance_video(
     if not temp_output.is_file() or temp_output.stat().st_size == 0:
         raise LocalizerError("AI super resolution finished without creating an enhanced video.")
     temp_output.replace(output)
+    return output
+
+
+def enhance_video(
+    source: Path,
+    output: Path,
+    *,
+    source_width: int,
+    source_height: int,
+    frame_rate: float,
+    duration: float,
+    source_audio_codec: str,
+    render: RenderConfig,
+    enhancement: EnhancementConfig,
+    working_directory: Path,
+    ffmpeg: str = "ffmpeg",
+    force: bool = False,
+) -> Path:
+    """Checkpoint video-only segments and mux original audio once at the end.
+
+    Completed segments survive interruption. Each checkpoint is bound to the source,
+    settings and runtime and verified before reuse; incomplete files are never reused.
+    """
+    if frame_rate <= 0 or duration <= 0:
+        raise LocalizerError("Positive duration and frame rate are required for AI enhancement.")
+    runtime = super_resolution_runtime()
+    if runtime is None:
+        raise LocalizerError(
+            "Install the optional AI super-resolution component before processing."
+        )
+    executable, _ = runtime
+    rate = min(frame_rate, render.output_fps or frame_rate)
+    total = max(1, round(duration * rate))
+    segment_frames = SEGMENT_FRAMES
+    identity = stable_hash(
+        {
+            "version": 1,
+            "source": build_output_artifact(source).model_dump(mode="json"),
+            "render": render,
+            "enhancement": enhancement,
+            "fps": rate,
+            "duration": duration,
+            "dimensions": [source_width, source_height],
+            "runtime": build_output_artifact(executable).model_dump(mode="json"),
+        }
+    )
+    checkpoint_root = working_directory / "checkpoints" / identity
+    if force and checkpoint_root.exists():
+        shutil.rmtree(checkpoint_root)
+    checkpoint_root.mkdir(parents=True, exist_ok=True)
+    segments: list[Path] = []
+    for start in range(0, total, segment_frames):
+        segment = checkpoint_root / f"segment-{start:012d}.mp4"
+        record = segment.with_suffix(".json")
+        reusable = False
+        if record.is_file():
+            with suppress(OSError, ValueError, TypeError):
+                reusable = output_artifact_is_current(
+                    OutputArtifact.model_validate(load_json(record)), segment
+                )
+        count = min(segment_frames, total - start)
+        if reusable:
+            LOGGER.info(
+                "AI super resolution: %s frames complete (%.1f%%); restored checkpoint.",
+                start + count,
+                min(99.9, (start + count) / total * 100),
+            )
+        else:
+            _enhance_video_stream(
+                source,
+                segment,
+                source_width=source_width,
+                source_height=source_height,
+                frame_rate=rate,
+                duration=duration,
+                source_audio_codec=source_audio_codec,
+                render=render,
+                enhancement=enhancement,
+                working_directory=working_directory / "stream",
+                ffmpeg=ffmpeg,
+                start_frame=start,
+                frame_limit=count,
+                total_frames=total,
+                include_audio=False,
+            )
+            atomic_write_json(record, build_output_artifact(segment).model_dump(mode="json"))
+        segments.append(segment)
+    listing = checkpoint_root / "concat.txt"
+    atomic_write_text(listing, "".join(f"file '{segment.name}'\n" for segment in segments))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "1",
+        "-i",
+        str(listing),
+        "-i",
+        str(source),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a?",
+        "-c:v",
+        "copy",
+    ]
+    if render.copy_audio_when_possible and source_audio_codec.casefold() == "aac":
+        command.extend(["-c:a", "copy"])
+    else:
+        command.extend(["-c:a", render.audio_codec, "-b:a", render.audio_bitrate])
+    if render.faststart:
+        command.extend(["-movflags", "+faststart"])
+    command.extend(["-shortest", str(partial)])
+    try:
+        run_command(command)
+        if not partial.is_file() or not partial.stat().st_size:
+            raise LocalizerError("Enhanced video assembly produced no output.")
+        partial.replace(output)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    # Only our fingerprint-specific cache is discarded after successful assembly.
+    shutil.rmtree(checkpoint_root)
     return output
