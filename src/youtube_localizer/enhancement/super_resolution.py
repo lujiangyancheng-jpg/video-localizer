@@ -6,6 +6,7 @@ import struct
 import subprocess
 import tempfile
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 from typing import BinaryIO
@@ -33,6 +34,14 @@ MODEL_DIRECTORIES = {
 }
 _VERIFIED_DEVICES: dict[str, int] = {}
 SEGMENT_FRAMES = 300
+_MIB = 1024**2
+
+
+@dataclass(frozen=True)
+class EnhancementPreviewResult:
+    output: Path
+    elapsed_seconds: float
+    estimated_full_seconds: float
 
 
 def super_resolution_target_height(
@@ -276,6 +285,162 @@ def _adaptive_batch_frames(
     # pixel is conservative enough for the temporary input and output directories together.
     estimate_per_frame = max(1, target_width * target_height * 4)
     return max(1, min(24, (320 * 1024**2) // estimate_per_frame))
+
+
+def required_segment_free_bytes(
+    source_width: int,
+    source_height: int,
+    target_height: int,
+    frame_count: int,
+) -> int:
+    """Reserve room for one active PNG batch, its encoded checkpoint, and assembly headroom."""
+    target_width = max(2, round(source_width * target_height / source_height))
+    pixels = target_width * target_height
+    active_frames = min(24, max(1, frame_count))
+    png_scratch = pixels * 4 * active_frames * 2
+    encoded_checkpoint = int(pixels * max(1, frame_count) * 0.05)
+    return max(1024 * _MIB, png_scratch + encoded_checkpoint + 512 * _MIB)
+
+
+def ensure_enhancement_space(
+    directory: Path,
+    *,
+    source_width: int,
+    source_height: int,
+    target_height: int,
+    frame_count: int,
+) -> None:
+    required = required_segment_free_bytes(source_width, source_height, target_height, frame_count)
+    available = shutil.disk_usage(directory).free
+    if available < required:
+        raise LocalizerError(
+            "AI super resolution paused before the next segment because the output disk has "
+            f"only {available / 1024**3:.1f} GiB free; at least "
+            f"{required / 1024**3:.1f} GiB is needed. Free space, then resume this project."
+        )
+
+
+def cleanup_enhancement_checkpoints(working_directory: Path) -> None:
+    """Remove resumable segments only after the caller validates the assembled output."""
+    checkpoint_root = working_directory / "checkpoints"
+    if checkpoint_root.is_dir():
+        shutil.rmtree(checkpoint_root)
+
+
+def render_enhancement_comparison(
+    source: Path,
+    output: Path,
+    *,
+    source_width: int,
+    source_height: int,
+    frame_rate: float,
+    source_duration: float,
+    source_audio_codec: str,
+    render: RenderConfig,
+    enhancement: EnhancementConfig,
+    start_seconds: float = 0,
+    duration_seconds: float = 10,
+    ffmpeg: str = "ffmpeg",
+) -> EnhancementPreviewResult:
+    """Create a short left-original/right-enhanced comparison and estimate full runtime."""
+    if enhancement.mode == "off":
+        raise LocalizerError("Select a super-resolution mode before creating a comparison.")
+    target_height = super_resolution_target_height(source_height, render, enhancement)
+    if target_height <= source_height:
+        raise LocalizerError(
+            "The selected output is not larger than the source, so there is no AI upscale to preview."
+        )
+    if start_seconds < 0 or start_seconds >= source_duration or duration_seconds <= 0:
+        raise LocalizerError("Preview position is outside this video.")
+    clip_duration = min(duration_seconds, source_duration - start_seconds)
+    started = monotonic()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="video-localizer-comparison-") as temporary:
+        temporary_root = Path(temporary)
+        clip = temporary_root / "source.mp4"
+        enhanced = temporary_root / "enhanced.mp4"
+        run_command(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-ss",
+                f"{start_seconds:.3f}",
+                "-i",
+                str(source),
+                "-t",
+                f"{clip_duration:.3f}",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "12",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                str(clip),
+            ]
+        )
+        preview_render = render.model_copy(update={"codec": "libx264", "preset": "veryfast"})
+        enhance_video(
+            clip,
+            enhanced,
+            source_width=source_width,
+            source_height=source_height,
+            frame_rate=frame_rate,
+            duration=clip_duration,
+            source_audio_codec="aac",
+            render=preview_render,
+            enhancement=enhancement,
+            working_directory=temporary_root / "work",
+            ffmpeg=ffmpeg,
+        )
+        display_height = min(720, target_height)
+        partial = output.with_name(f"{output.stem}.partial{output.suffix}")
+        run_command(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(clip),
+                "-i",
+                str(enhanced),
+                "-filter_complex",
+                (
+                    f"[0:v]scale=-2:{display_height}:flags=lanczos,setsar=1[left];"
+                    f"[1:v]scale=-2:{display_height}:flags=lanczos,setsar=1[right];"
+                    "[left][right]hstack=inputs=2[v]"
+                ),
+                "-map",
+                "[v]",
+                "-map",
+                "0:a?",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "veryfast",
+                "-crf",
+                "16",
+                "-c:a",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(partial),
+            ]
+        )
+        if not partial.is_file() or not partial.stat().st_size:
+            raise LocalizerError("AI comparison finished without creating a video.")
+        partial.replace(output)
+    elapsed = monotonic() - started
+    estimated = elapsed * max(clip_duration, source_duration) / clip_duration
+    return EnhancementPreviewResult(output, elapsed, estimated)
 
 
 def _process_error(stderr_file: BinaryIO, fallback: str) -> str:
@@ -558,6 +723,15 @@ def enhance_video(
                 min(99.9, (start + count) / total * 100),
             )
         else:
+            requested_height = super_resolution_target_height(source_height, render, enhancement)
+            intermediate_height = source_height * (4 if requested_height > source_height * 2 else 2)
+            ensure_enhancement_space(
+                checkpoint_root,
+                source_width=source_width,
+                source_height=source_height,
+                target_height=intermediate_height,
+                frame_count=count,
+            )
             _enhance_video_stream(
                 source,
                 segment,
@@ -617,6 +791,4 @@ def enhance_video(
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
-    # Only our fingerprint-specific cache is discarded after successful assembly.
-    shutil.rmtree(checkpoint_root)
     return output

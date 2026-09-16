@@ -75,8 +75,13 @@ def test_pipeline_ignores_provided_chinese_and_transcribes_locally(tmp_path) -> 
         ),
         patch("youtube_localizer.pipeline.download_youtube", side_effect=fake_download),
         patch("youtube_localizer.pipeline.translate_with_offline", side_effect=fake_translate),
-        patch("youtube_localizer.pipeline.extract_transcription_audio", side_effect=_fake_extract_audio),
-        patch("youtube_localizer.pipeline.transcribe_audio", side_effect=fake_transcribe) as transcribe,
+        patch(
+            "youtube_localizer.pipeline.extract_transcription_audio",
+            side_effect=_fake_extract_audio,
+        ),
+        patch(
+            "youtube_localizer.pipeline.transcribe_audio", side_effect=fake_transcribe
+        ) as transcribe,
         patch("youtube_localizer.pipeline.render_project", side_effect=fake_render),
     ):
         result = process_pipeline(url, config)
@@ -145,7 +150,10 @@ def test_pipeline_transcribes_chinese_when_no_caption_track_exists(tmp_path) -> 
             return_value=(project, metadata, {"id": metadata.video_id}),
         ),
         patch("youtube_localizer.pipeline.download_youtube", side_effect=fake_download),
-        patch("youtube_localizer.pipeline.extract_transcription_audio", side_effect=_fake_extract_audio),
+        patch(
+            "youtube_localizer.pipeline.extract_transcription_audio",
+            side_effect=_fake_extract_audio,
+        ),
         patch("youtube_localizer.pipeline.transcribe_audio", side_effect=fake_transcribe),
         patch("youtube_localizer.pipeline.translate_with_offline", side_effect=fake_translate),
         patch("youtube_localizer.pipeline.render_project") as render,

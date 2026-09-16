@@ -147,6 +147,99 @@ def build_hardsub_command(
     return command
 
 
+def build_video_transform_command(
+    source_video: Path,
+    output_file: Path,
+    config: RenderConfig,
+    *,
+    source_audio_codec: str = "",
+    source_frame_rate: float | None = None,
+    ffmpeg: str = "ffmpeg",
+) -> list[str]:
+    """Build an ordinary scale/frame-rate conversion without subtitles or AI."""
+    filters: list[str] = []
+    if config.output_height is not None:
+        filters.append(
+            f"scale=-2:min({config.output_height}\\,ih):force_original_aspect_ratio=decrease"
+        )
+    if config.output_fps is not None and (
+        source_frame_rate is None or source_frame_rate > config.output_fps + 0.5
+    ):
+        filters.append(f"fps={config.output_fps}")
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostats",
+        "-stats_period",
+        "2",
+        "-progress",
+        "pipe:1",
+        "-y",
+        "-i",
+        str(source_video),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a?",
+    ]
+    if filters:
+        command.extend(["-vf", ",".join(filters)])
+    command.extend(["-c:v", config.codec, *video_codec_arguments(config)])
+    if config.copy_audio_when_possible and source_audio_codec.lower() == "aac":
+        command.extend(["-c:a", "copy"])
+    else:
+        command.extend(["-c:a", config.audio_codec, "-b:a", config.audio_bitrate])
+    if config.faststart:
+        command.extend(["-movflags", "+faststart"])
+    command.append(str(output_file))
+    return command
+
+
+def render_video_transform(
+    source_video: Path,
+    output_file: Path,
+    config: RenderConfig,
+    *,
+    source_audio_codec: str = "",
+    expected_duration: float | None = None,
+    source_frame_rate: float | None = None,
+    ffmpeg: str = "ffmpeg",
+) -> Path:
+    """Apply requested output dimensions/FPS in direct-download workflows."""
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temp = output_file.with_name(f"{output_file.stem}.partial{output_file.suffix}")
+    active_ffmpeg, active_config = resolve_render_backend(config, ffmpeg)
+    progress = _FFmpegProgress(expected_duration, label="Converting video output")
+
+    def execute(render_config: RenderConfig) -> None:
+        run_streaming_command(
+            build_video_transform_command(
+                source_video,
+                temp,
+                render_config,
+                source_audio_codec=source_audio_codec,
+                source_frame_rate=source_frame_rate,
+                ffmpeg=active_ffmpeg,
+            ),
+            line_callback=progress.consume,
+        )
+
+    with heavy_workload_slot("video output conversion", kind="encoder"):
+        try:
+            execute(active_config)
+        except ExternalToolError as exc:
+            if active_config.codec not in HARDWARE_H264_CODECS:
+                raise LocalizerError(f"FFmpeg video conversion failed.\n{exc}") from exc
+            LOGGER.warning("Hardware conversion failed; retrying with fast CPU encoding.")
+            execute(active_config.model_copy(update={"codec": "libx264", "preset": "fast"}))
+    if not temp.is_file() or temp.stat().st_size == 0:
+        raise LocalizerError("FFmpeg reported success but did not create the converted video.")
+    temp.replace(output_file)
+    return output_file
+
+
 def render_hardsub(
     source_video: Path,
     subtitle_file: Path,
@@ -252,10 +345,13 @@ def _render_hardsub(
 
 
 class _FFmpegProgress:
-    def __init__(self, expected_duration: float | None) -> None:
+    def __init__(
+        self, expected_duration: float | None, *, label: str = "Rendering subtitles"
+    ) -> None:
         self.expected_duration = (
             expected_duration if expected_duration and expected_duration > 0 else None
         )
+        self.label = label
         self.values: dict[str, str] = {}
 
     def consume(self, line: str) -> None:
@@ -269,11 +365,12 @@ class _FFmpegProgress:
         speed = self.values.get("speed", "?")
         elapsed = _parse_ffmpeg_time(elapsed_text)
         if self.expected_duration is None:
-            LOGGER.info("Rendering subtitles: %s elapsed, speed %s.", elapsed_text, speed)
+            LOGGER.info("%s: %s elapsed, speed %s.", self.label, elapsed_text, speed)
             return
         percent = min(100.0, max(0.0, elapsed / self.expected_duration * 100))
         LOGGER.info(
-            "Rendering subtitles: %.1f%% (%s / %s), speed %s.",
+            "%s: %.1f%% (%s / %s), speed %s.",
+            self.label,
             percent,
             elapsed_text,
             _format_duration(self.expected_duration),

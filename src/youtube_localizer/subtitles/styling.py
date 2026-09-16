@@ -33,8 +33,7 @@ def chinese_line_width(config: SubtitleConfig, video_size: tuple[int, int] | Non
 
 def _line_display_units(text: str) -> float:
     return sum(
-        1.0 if unicodedata.east_asian_width(character) in {"W", "F"} else 0.55
-        for character in text
+        1.0 if unicodedata.east_asian_width(character) in {"W", "F"} else 0.55 for character in text
     )
 
 

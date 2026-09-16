@@ -14,10 +14,14 @@ from youtube_localizer.enhancement.super_resolution import (
     _run_upscaler_batch,
     build_enhanced_encode_command,
     build_upscaler_command,
+    cleanup_enhancement_checkpoints,
+    ensure_enhancement_space,
     read_png_frame,
+    render_enhancement_comparison,
+    required_segment_free_bytes,
     super_resolution_target_height,
 )
-from youtube_localizer.errors import ExternalToolError
+from youtube_localizer.errors import ExternalToolError, LocalizerError
 
 
 def _png() -> bytes:
@@ -144,6 +148,26 @@ def test_output_fps_is_applied_and_progress_is_visible(tmp_path):
     assert value == 10
 
 
+def test_segment_disk_reserve_scales_with_resolution(tmp_path, monkeypatch) -> None:
+    low = required_segment_free_bytes(1280, 720, 1440, 300)
+    high = required_segment_free_bytes(1920, 1080, 4320, 300)
+    assert high > low
+
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(
+        "youtube_localizer.enhancement.super_resolution.shutil.disk_usage",
+        lambda _path: usage._replace(free=1024),
+    )
+    with pytest.raises(LocalizerError, match="Free space, then resume"):
+        ensure_enhancement_space(
+            tmp_path,
+            source_width=1920,
+            source_height=1080,
+            target_height=2160,
+            frame_count=300,
+        )
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("corrupt_checkpoint", [False, True])
 def test_segment_resume_preserves_audio_duration_and_output_fps(
@@ -232,4 +256,77 @@ def test_segment_resume_preserves_audio_duration_and_output_fps(
     assert int(video["nb_frames"]) == 18
     assert any(s["codec_type"] == "audio" for s in info["streams"])
     assert abs(float(info["format"]["duration"]) - 3) < 0.1
-    assert not list((tmp_path / "work" / "checkpoints").glob("*/segment-*.mp4"))
+    assert list((tmp_path / "work" / "checkpoints").glob("*/segment-*.mp4"))
+    cleanup_enhancement_checkpoints(tmp_path / "work")
+    assert not (tmp_path / "work" / "checkpoints").exists()
+
+
+@pytest.mark.integration
+def test_enhancement_comparison_is_side_by_side_and_estimates_full_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    from youtube_localizer.enhancement import super_resolution as sr
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        pytest.skip("FFmpeg tools are required")
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=4:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-y",
+            str(source),
+        ],
+        check=True,
+    )
+    executable = tmp_path / "test-runtime"
+    executable.write_bytes(b"runtime")
+    monkeypatch.setattr(sr, "super_resolution_runtime", lambda: (executable, tmp_path))
+
+    def copy_frames(_exe, inputs, outputs, *_args, **_kwargs):
+        for frame in inputs.glob("*.png"):
+            shutil.copy2(frame, outputs / frame.name)
+        return 0
+
+    monkeypatch.setattr(sr, "_run_upscaler_batch", copy_frames)
+    output = tmp_path / "comparison.mp4"
+    result = render_enhancement_comparison(
+        source,
+        output,
+        source_width=64,
+        source_height=64,
+        frame_rate=4,
+        source_duration=1,
+        source_audio_codec="aac",
+        render=RenderConfig(codec="libx264"),
+        enhancement=EnhancementConfig(mode="general"),
+        duration_seconds=1,
+        ffmpeg=ffmpeg,
+    )
+    info = json.loads(
+        subprocess.check_output(
+            [ffprobe, "-v", "error", "-show_streams", "-of", "json", str(output)]
+        )
+    )
+    video = next(stream for stream in info["streams"] if stream["codec_type"] == "video")
+    assert int(video["width"]) == 256
+    assert int(video["height"]) == 128
+    assert any(stream["codec_type"] == "audio" for stream in info["streams"])
+    assert result.output == output
+    assert result.elapsed_seconds > 0
+    assert result.estimated_full_seconds >= result.elapsed_seconds

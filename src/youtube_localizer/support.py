@@ -71,7 +71,9 @@ def _redact_value(value: Any, *, key: str = "", metadata: bool = False) -> Any:
     return value
 
 
-def _json_file(project: ProjectPaths, path: Path, *, metadata: bool = False) -> tuple[str, str] | None:
+def _json_file(
+    project: ProjectPaths, path: Path, *, metadata: bool = False
+) -> tuple[str, str] | None:
     if not path.is_file():
         return None
     try:
@@ -119,7 +121,12 @@ def create_support_bundle(project: ProjectPaths, destination: Path | None = None
     pipeline_log = project.logs / "pipeline.log"
     if pipeline_log.is_file():
         with suppress(OSError):
-            entries.append(("project/logs/pipeline.log", _redact_text(pipeline_log.read_text(encoding="utf-8", errors="replace"))))
+            entries.append(
+                (
+                    "project/logs/pipeline.log",
+                    _redact_text(pipeline_log.read_text(encoding="utf-8", errors="replace")),
+                )
+            )
 
     with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, content in entries:

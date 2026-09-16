@@ -51,9 +51,7 @@ class DirectMediaUrlAssessment:
     expired: bool
 
 
-def assess_direct_media_url(
-    value: str, *, now: datetime | None = None
-) -> DirectMediaUrlAssessment:
+def assess_direct_media_url(value: str, *, now: datetime | None = None) -> DirectMediaUrlAssessment:
     """Describe an explicit media URL without contacting its server.
 
     Expiry detection is deliberately conservative: only common, unambiguous epoch query
@@ -61,9 +59,7 @@ def assess_direct_media_url(
     """
     parsed = _parsed_direct_media_url(value)
     if not parsed or not is_direct_media_candidate_url(value):
-        raise InputValidationError(
-            "媒体直链必须是完整的 HTTP(S) 地址，且不能内嵌登录凭据。"
-        )
+        raise InputValidationError("媒体直链必须是完整的 HTTP(S) 地址，且不能内嵌登录凭据。")
     if "…" in value or parsed.path.endswith("..."):
         raise InputValidationError(
             "这条媒体直链已被截断。请复制完整地址；以“…”结尾的显示文字无法下载。"
@@ -240,9 +236,7 @@ def inspect_direct_media(url: str) -> tuple[SourceMetadata, dict[str, Any]]:
     assessment = assess_direct_media_url(url)
     if assessment.expired:
         expiry = assessment.expires_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        raise InputValidationError(
-            f"这条签名媒体直链显示已于 {expiry} 过期。请复制新的完整地址。"
-        )
+        raise InputValidationError(f"这条签名媒体直链显示已于 {expiry} 过期。请复制新的完整地址。")
     if not is_direct_media_url(url):
         _probe_direct_media_content_type(url)
     options: dict[str, Any] = {

@@ -13,6 +13,7 @@ from youtube_localizer.hardware import H264Encoder, NvencEncoder
 from youtube_localizer.rendering.ffmpeg import (
     build_hardsub_command,
     build_softsub_command,
+    build_video_transform_command,
     render_hardsub,
 )
 from youtube_localizer.utils.subprocesses import resolve_executable, run_command
@@ -59,7 +60,9 @@ def test_ffmpeg_command_loads_bundled_fonts_directory(tmp_path) -> None:
     assert "pretty fonts" in subtitle_filter
 
 
-def test_ffmpeg_command_caps_resolution_and_fps_without_upscaling_or_frame_duplication(tmp_path) -> None:
+def test_ffmpeg_command_caps_resolution_and_fps_without_upscaling_or_frame_duplication(
+    tmp_path,
+) -> None:
     command = build_hardsub_command(
         tmp_path / "source.mp4",
         tmp_path / "subtitle.ass",
@@ -80,6 +83,22 @@ def test_ffmpeg_command_caps_resolution_and_fps_without_upscaling_or_frame_dupli
         source_frame_rate=30,
     )
     assert "fps=60" not in lower_rate_command[lower_rate_command.index("-vf") + 1]
+
+
+def test_direct_download_transform_applies_lower_output_limits(tmp_path) -> None:
+    command = build_video_transform_command(
+        tmp_path / "source.mp4",
+        tmp_path / "output.mp4",
+        RenderConfig(codec="libx264", output_height=720, output_fps=30),
+        source_audio_codec="aac",
+        source_frame_rate=60,
+    )
+
+    video_filter = command[command.index("-vf") + 1]
+    assert "scale=-2:min(720\\,ih)" in video_filter
+    assert "fps=30" in video_filter
+    assert command[command.index("-c:a") + 1] == "copy"
+    assert command[-1].endswith("output.mp4")
 
 
 def test_ffmpeg_command_uses_vendor_appropriate_quality_controls(tmp_path) -> None:
@@ -181,9 +200,7 @@ def test_subprocess_wrapper_never_uses_shell() -> None:
 
 
 def test_subprocess_wrapper_explains_windows_control_c_exit() -> None:
-    completed = subprocess.CompletedProcess(
-        ["ffmpeg"], 3221225786, stdout="", stderr=""
-    )
+    completed = subprocess.CompletedProcess(["ffmpeg"], 3221225786, stdout="", stderr="")
     with (
         patch(
             "youtube_localizer.utils.subprocesses.subprocess.run",

@@ -44,7 +44,9 @@ def test_bilingual_ass_keeps_all_chinese_lines_in_chinese_style(tmp_path) -> Non
     )
 
     dialogue = next(
-        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:")
     )
     assert r"{\rChinese}中文第一行\N中文第二行\N{\rEnglish}English line" in dialogue
     assert r"\N{\rEnglish}中文第二行" not in dialogue
@@ -61,7 +63,9 @@ def test_extreme_portrait_line_gets_a_per_cue_font_override(tmp_path) -> None:
     )
 
     dialogue = next(
-        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:")
     )
     assert r"{\fs" in dialogue
 
@@ -78,7 +82,9 @@ def test_ass_uses_the_selected_preview_position_for_every_cue(tmp_path) -> None:
     )
 
     dialogue = next(
-        line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Dialogue:")
     )
     assert subtitle_position(config, (360, 640)) == (152, 778)
     assert r"{\an2\pos(152,778)}" in dialogue

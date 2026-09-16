@@ -39,9 +39,11 @@ from .download.browser_capture import (
 from .download.direct import assess_direct_media_url, is_direct_media_candidate_url
 from .download.webpage import is_webpage_url
 from .download.youtube import is_youtube_url
+from .enhancement.super_resolution import render_enhancement_comparison
 from .errors import LocalizerError
 from .hardware import SystemResources, detect_system_resources
 from .inspection_cache import save_cached_inspection
+from .installation import component_inventory, installation_root
 from .media_preview import MediaPreview, inspect_media_preview, media_preview_summary
 from .models import ProjectPaths
 from .onboarding import (
@@ -159,9 +161,9 @@ def output_directory_status_hint(path: Path) -> str:
     if not recoverable:
         return advice
     count = len(recoverable)
-    return (
-        f"{advice} 发现 {count} 个未完成项目；重新粘贴原链接并保留“继续上次处理”即可恢复。"
-    )
+    return f"{advice} 发现 {count} 个未完成项目；重新粘贴原链接并保留“继续上次处理”即可恢复。"
+
+
 LANGUAGE_DISPLAY_NAMES = {
     "zh": "简体中文",
     "en": "英文",
@@ -312,9 +314,7 @@ def retain_pending_start_sources(
     return pending_sources
 
 
-def gui_parallel_job_limit(
-    input_count: int, resources: SystemResources | None = None
-) -> int:
+def gui_parallel_job_limit(input_count: int, resources: SystemResources | None = None) -> int:
     """Scale lightweight queue concurrency while heavy-work locks protect responsiveness."""
     if input_count < 1:
         return 1
@@ -369,7 +369,10 @@ def project_workspace_from_output(line: str, output_directory: str | Path) -> Pa
 
 
 def progress_update_from_output(
-    line: str, *, provider: str, enhancement: bool = False,
+    line: str,
+    *,
+    provider: str,
+    enhancement: bool = False,
 ) -> tuple[float, str] | None:
     """Map the pipeline's real progress messages to a single GUI progress percentage."""
     if "Preflight ready:" in line:
@@ -481,9 +484,7 @@ def super_resolution_installation_message(mode: str) -> str | None:
 def friendly_failure_summary(log_text: str) -> str:
     """Translate common terminal failures into one short recovery action."""
     normalized = log_text.casefold()
-    if "媒体服务器拒绝" in normalized and any(
-        marker in normalized for marker in ("401", "403")
-    ):
+    if "媒体服务器拒绝" in normalized and any(marker in normalized for marker in ("401", "403")):
         return (
             "这条媒体直链已过期，或依赖浏览器凭据。"
             "请从内容方播放器重新复制完整的公开地址后继续任务。"
@@ -491,10 +492,11 @@ def friendly_failure_summary(log_text: str) -> str:
     if "媒体服务器暂时限流" in normalized:
         return "媒体服务器暂时限流。请稍后继续任务，或重新复制最新的完整直链。"
     if "429" in normalized or "too many requests" in normalized:
-        return "YouTube 暂时限制了请求。请等待几分钟后点击“重试未完成任务”；已经完成的阶段不会重做。"
+        return (
+            "YouTube 暂时限制了请求。请等待几分钟后点击“重试未完成任务”；已经完成的阶段不会重做。"
+        )
     if any(
-        marker in normalized
-        for marker in ("out of memory", "cuda error", "cublas", "显存不足")
+        marker in normalized for marker in ("out of memory", "cuda error", "cublas", "显存不足")
     ):
         return "显存或 CUDA 运行环境不足。请关闭占用显卡的软件后重试；仍失败时改用 Whisper Small。"
     if any(
@@ -504,10 +506,7 @@ def friendly_failure_summary(log_text: str) -> str:
         return "输出磁盘空间不足。请至少预留 20 GiB，或在“处理设置”中更换输出位置。"
     if any(marker in normalized for marker in ("private video", "sign in", "video unavailable")):
         return "视频不可公开访问、需要登录或已失效。请确认链接权限，或改用你有权处理的本地文件。"
-    if any(
-        marker in normalized
-        for marker in ("cloudflare", "浏览器验证", "iframe", "混淆脚本")
-    ):
+    if any(marker in normalized for marker in ("cloudflare", "浏览器验证", "iframe", "混淆脚本")):
         return (
             "该动态播放页需要浏览器环境。请回到主界面点击“浏览器抓取”，"
             "在独立 Edge 窗口中让视频开始播放；程序会自动接收完整媒体地址。"
@@ -588,10 +587,10 @@ def build_process_command(
         "openai-compatible",
     }:
         raise ValueError("其他语种仅支持本地 AI 翻译或 API 自动翻译。")
-    if (
-        requires_local_ai_or_api(translation_direction)
-        and subtitle_mode in {"bilingual_en_zh", "bilingual_zh_en"}
-    ):
+    if requires_local_ai_or_api(translation_direction) and subtitle_mode in {
+        "bilingual_en_zh",
+        "bilingual_zh_en",
+    }:
         raise ValueError("其他语种仅支持“仅目标语言字幕”，不能使用中英双语排版。")
     if subtitle_font not in SUBTITLE_FONTS.values():
         raise ValueError("未知的字幕字体。")
@@ -757,9 +756,9 @@ class SubtitlePreviewDialog:
         ttk.Button(buttons, text="恢复默认", style="Secondary.TButton", command=self._reset).pack(
             side="left"
         )
-        ttk.Button(buttons, text="取消", style="Secondary.TButton", command=self.window.destroy).pack(
-            side="right"
-        )
+        ttk.Button(
+            buttons, text="取消", style="Secondary.TButton", command=self.window.destroy
+        ).pack(side="right")
         ttk.Button(buttons, text="应用到任务", style="Primary.TButton", command=self._apply).pack(
             side="right", padx=(0, 8)
         )
@@ -768,15 +767,22 @@ class SubtitlePreviewDialog:
 
     def _preview_sample(self) -> str:
         if self.subtitle_mode == "bilingual_en_zh":
-            return "Natural subtitles begin with the complete idea.\n先理解完整段落，再呈现自然字幕。"
+            return (
+                "Natural subtitles begin with the complete idea.\n先理解完整段落，再呈现自然字幕。"
+            )
         if self.subtitle_mode == "bilingual_zh_en":
-            return "先理解完整段落，再呈现自然字幕。\nNatural subtitles begin with the complete idea."
+            return (
+                "先理解完整段落，再呈现自然字幕。\nNatural subtitles begin with the complete idea."
+            )
         return "先理解完整段落，再呈现自然字幕。"
 
     def _canvas_preview_box(self) -> tuple[float, float, float, float]:
         canvas_width = max(1, self.canvas.winfo_width())
         canvas_height = max(1, self.canvas.winfo_height())
-        unit = min((canvas_width - 24) / SUBTITLE_PREVIEW_WIDTH, (canvas_height - 24) / SUBTITLE_PREVIEW_HEIGHT)
+        unit = min(
+            (canvas_width - 24) / SUBTITLE_PREVIEW_WIDTH,
+            (canvas_height - 24) / SUBTITLE_PREVIEW_HEIGHT,
+        )
         width = max(320.0, unit * SUBTITLE_PREVIEW_WIDTH)
         height = max(180.0, unit * SUBTITLE_PREVIEW_HEIGHT)
         left = (canvas_width - width) / 2
@@ -788,7 +794,9 @@ class SubtitlePreviewDialog:
             return
         self.canvas.delete("all")
         left, top, right, bottom = self._preview_box = self._canvas_preview_box()
-        self.canvas.create_rectangle(left, top, right, bottom, fill="#151B26", outline="#273244", width=1)
+        self.canvas.create_rectangle(
+            left, top, right, bottom, fill="#151B26", outline="#273244", width=1
+        )
         self.canvas.create_rectangle(left, top, right, top + 48, fill="#1E2939", outline="")
         self.canvas.create_text(
             left + 18,
@@ -844,7 +852,9 @@ class SubtitlePreviewDialog:
         )
         bbox = self.canvas.bbox(subtitle)
         if bbox is not None:
-            bound_left, bound_top, bound_right, bound_bottom = (value - 7 if index < 2 else value + 7 for index, value in enumerate(bbox))
+            bound_left, bound_top, bound_right, bound_bottom = (
+                value - 7 if index < 2 else value + 7 for index, value in enumerate(bbox)
+            )
             self._subtitle_bounds = (bound_left, bound_top, bound_right, bound_bottom)
             self.canvas.create_rectangle(
                 bound_left,
@@ -1073,7 +1083,9 @@ class BrowserCaptureDialog:
             wraplength=650,
             justify="left",
         ).pack(anchor="w", pady=(2, 8))
-        self.progress = ttk.Progressbar(body, mode="indeterminate", style="Modern.Horizontal.TProgressbar")
+        self.progress = ttk.Progressbar(
+            body, mode="indeterminate", style="Modern.Horizontal.TProgressbar"
+        )
         self.progress.pack(fill="x", pady=(0, 14))
 
         ttk.Label(
@@ -1173,6 +1185,121 @@ class BrowserCaptureDialog:
             self.on_cancel()
 
 
+class ComponentManagerDialog:
+    """Read-only component inventory with repair and Windows uninstall entry points."""
+
+    def __init__(self, parent: tk.Misc) -> None:
+        self.window = tk.Toplevel(parent)
+        self.window.title("本地组件管理｜Localize Studio")
+        self.window.geometry("780x520")
+        self.window.minsize(700, 480)
+        self.window.configure(background=SURFACE)
+        self.window.transient(parent)
+        body = ttk.Frame(self.window, style="Card.TFrame", padding=(26, 22))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="本地模型与画质组件", style="SectionTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            body,
+            text="查看占用、补装或修复组件。卸载会交给 Windows 应用管理，避免运行中的软件删除自身文件。",
+            style="Muted.TLabel",
+            wraplength=690,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 14))
+        self.tree = ttk.Treeview(
+            body,
+            columns=("component", "status", "size", "detail"),
+            show="headings",
+            height=7,
+            style="Task.Treeview",
+        )
+        for key, title, width in (
+            ("component", "组件", 170),
+            ("status", "状态", 80),
+            ("size", "磁盘占用", 95),
+            ("detail", "用途", 330),
+        ):
+            self.tree.heading(key, text=title)
+            self.tree.column(key, width=width, stretch=key == "detail")
+        self.tree.pack(fill="both", expand=True)
+        self._refresh()
+        actions = ttk.Frame(body, style="Card.TFrame")
+        actions.pack(fill="x", pady=(16, 0))
+        ttk.Button(
+            actions,
+            text="下载 / 修复组件",
+            style="Primary.TButton",
+            command=lambda: webbrowser.open(model_release_page_url()),
+        ).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Windows 卸载管理",
+            style="Secondary.TButton",
+            command=self._open_windows_apps,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            actions,
+            text="打开安装位置",
+            style="Secondary.TButton",
+            command=self._open_installation,
+        ).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            actions,
+            text="关闭",
+            style="Secondary.TButton",
+            command=self.window.destroy,
+        ).pack(side="right")
+
+    @staticmethod
+    def _size_text(size: int) -> str:
+        if size <= 0:
+            return "—"
+        return f"{size / 1024**3:.2f} GiB" if size >= 1024**3 else f"{size / 1024**2:.1f} MiB"
+
+    def _refresh(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        inventory = component_inventory()
+        if not inventory:
+            self.tree.insert(
+                "", "end", values=("开发环境", "未打包", "—", "请通过项目依赖管理组件")
+            )
+            return
+        for component in inventory:
+            status = (
+                "需修复"
+                if component.repair_needed
+                else "已安装"
+                if component.installed
+                else "未安装"
+            )
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    component.name,
+                    status,
+                    self._size_text(component.size_bytes),
+                    component.detail,
+                ),
+            )
+
+    def _open_windows_apps(self) -> None:
+        if os.name == "nt":
+            os.startfile("ms-settings:appsfeatures")  # type: ignore[attr-defined]
+        else:
+            webbrowser.open(model_release_page_url())
+
+    def _open_installation(self) -> None:
+        root = installation_root()
+        if root is None:
+            messagebox.showinfo("开发环境", "当前不是已安装的离线版本。", parent=self.window)
+            return
+        if os.name == "nt":
+            os.startfile(root)  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(root)])
+
+
 class HelpCenterDialog:
     """Persistent tutorial, readiness summary, and recovery guidance."""
 
@@ -1186,8 +1313,8 @@ class HelpCenterDialog:
         self.on_select_workflow = on_select_workflow
         self.window = tk.Toplevel(parent)
         self.window.title("帮助中心｜Localize Studio")
-        self.window.geometry("760x590")
-        self.window.minsize(680, 520)
+        self.window.geometry("780x700")
+        self.window.minsize(700, 620)
         self.window.configure(background=SURFACE)
         self.window.transient(parent)
 
@@ -1312,6 +1439,12 @@ class HelpCenterDialog:
                 style="Primary.TButton",
                 command=lambda: webbrowser.open(model_release_page_url()),
             ).pack(anchor="w", pady=(14, 0))
+        ttk.Button(
+            frame,
+            text="管理本地模型与画质组件",
+            style="Secondary.TButton",
+            command=lambda: ComponentManagerDialog(self.window),
+        ).pack(anchor="w", pady=(10, 0))
 
     def _build_troubleshooting(self, frame: ttk.Frame) -> None:
         questions = (
@@ -1351,7 +1484,8 @@ class SubtitleReviewDialog:
         config: AppConfig,
         *,
         on_preview: Callable[
-            [SubtitleReviewSession, AppConfig, float, Callable[[Path | None, str | None], None]], None
+            [SubtitleReviewSession, AppConfig, float, Callable[[Path | None, str | None], None]],
+            None,
         ],
     ) -> None:
         self.session = session
@@ -1436,7 +1570,9 @@ class SubtitleReviewDialog:
 
         footer = ttk.Frame(body, style="Card.TFrame")
         footer.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(16, 0))
-        ttk.Button(footer, text="关闭", style="Secondary.TButton", command=self._close).pack(side="left")
+        ttk.Button(footer, text="关闭", style="Secondary.TButton", command=self._close).pack(
+            side="left"
+        )
         self.preview_button = ttk.Button(
             footer, text="从此处预览 12 秒", style="Secondary.TButton", command=self._preview
         )
@@ -1451,7 +1587,9 @@ class SubtitleReviewDialog:
             self.tree.delete(item)
         for index, cue in enumerate(self.cues):
             timing = f"{ms_to_srt(cue.start_ms)} → {ms_to_srt(cue.end_ms)}"
-            self.tree.insert("", "end", iid=str(index), values=(cue.id, timing, cue.text.replace("\n", " / ")))
+            self.tree.insert(
+                "", "end", iid=str(index), values=(cue.id, timing, cue.text.replace("\n", " / "))
+            )
         if self.cues:
             self.tree.selection_set("0")
             self.tree.focus("0")
@@ -1462,7 +1600,9 @@ class SubtitleReviewDialog:
             return True
         text = self.editor.get("1.0", "end-1c").strip()
         if not text:
-            messagebox.showwarning("字幕不能为空", "请保留当前段落的文字，或取消编辑。", parent=self.window)
+            messagebox.showwarning(
+                "字幕不能为空", "请保留当前段落的文字，或取消编辑。", parent=self.window
+            )
             return False
         current = self.cues[self.selected_index]
         if text != current.text:
@@ -1474,7 +1614,9 @@ class SubtitleReviewDialog:
     def _load_selected(self, index: int) -> None:
         cue = self.cues[index]
         self.selected_index = index
-        self.cue_label.configure(text=f"第 {cue.id} 条　{ms_to_srt(cue.start_ms)} → {ms_to_srt(cue.end_ms)}")
+        self.cue_label.configure(
+            text=f"第 {cue.id} 条　{ms_to_srt(cue.start_ms)} → {ms_to_srt(cue.end_ms)}"
+        )
         self.editor.delete("1.0", "end")
         self.editor.insert("1.0", cue.text)
 
@@ -1514,7 +1656,9 @@ class SubtitleReviewDialog:
         if not quiet:
             messagebox.showinfo(
                 "字幕已保存",
-                "已更新：\n" + "\n".join(str(path.name) for path in outputs) + "\n\n可先生成短预览，确认后再完整压制最终视频。",
+                "已更新：\n"
+                + "\n".join(str(path.name) for path in outputs)
+                + "\n\n可先生成短预览，确认后再完整压制最终视频。",
                 parent=self.window,
             )
         return True
@@ -1571,13 +1715,9 @@ class RightsDetailsDialog:
 
         self.rights_holder = tk.StringVar(value=str(values.get("rights_holder", "")))
         self.license_url = tk.StringVar(value=str(values.get("license_url", "")))
-        self.permission_reference = tk.StringVar(
-            value=str(values.get("permission_reference", ""))
-        )
+        self.permission_reference = tk.StringVar(value=str(values.get("permission_reference", "")))
         self.attribution_text = tk.StringVar(value=str(values.get("attribution_text", "")))
-        self.allow_translation = tk.BooleanVar(
-            value=bool(values.get("allow_translation", True))
-        )
+        self.allow_translation = tk.BooleanVar(value=bool(values.get("allow_translation", True)))
         self.allow_redistribution = tk.BooleanVar(
             value=bool(values.get("allow_redistribution", True))
         )
@@ -1689,6 +1829,7 @@ class LocalizerWindow:
         self._pause_requested_indices: set[int] = set()
         self.worker: threading.Thread | None = None
         self._analysis_worker: threading.Thread | None = None
+        self._enhancement_preview_running = False
         self._analysis_generation = 0
         self._analysis_after_id: str | None = None
         self._queue_save_after_id: str | None = None
@@ -1738,9 +1879,7 @@ class LocalizerWindow:
             f"自定义（{saved_settings.font_size}）",
         )
 
-        self.input_value = tk.StringVar(
-            value="\n".join(task.source for task in saved_queue.tasks)
-        )
+        self.input_value = tk.StringVar(value="\n".join(task.source for task in saved_queue.tasks))
         self.direction_label = tk.StringVar(
             value=label_for_value(
                 TRANSLATION_DIRECTIONS, saved_settings.direction, "英文 → 简体中文"
@@ -2256,9 +2395,7 @@ class LocalizerWindow:
             self.input_frame,
             text="链接分析在后台进行，确认媒体信息后再开始处理",
             style="Muted.TLabel",
-        ).grid(
-            row=0, column=1, sticky="e", pady=(0, 3)
-        )
+        ).grid(row=0, column=1, sticky="e", pady=(0, 3))
         self.input_entry = ttk.Entry(
             self.input_frame,
             textvariable=self.input_value,
@@ -2320,7 +2457,15 @@ class LocalizerWindow:
             command=self._open_selected_task_project,
             state="disabled",
         )
-        self.open_task_button.grid(row=0, column=5, padx=(4, 0))
+        self.open_task_button.grid(row=0, column=6, padx=(4, 0))
+        self.enhancement_preview_button = ttk.Button(
+            task_toolbar,
+            text="超分对比",
+            style="CardToolbar.TButton",
+            command=self._preview_selected_enhancement,
+            state="disabled",
+        )
+        self.enhancement_preview_button.grid(row=0, column=5, padx=(4, 0))
 
         task_list = ttk.Frame(self.input_frame, style="CardBody.TFrame")
         task_list.grid(row=4, column=0, columnspan=2, sticky="ew")
@@ -2851,13 +2996,9 @@ class LocalizerWindow:
                     message = " ".join(str(exc).split())
                     if len(message) > 150:
                         message = f"{message[:147]}…"
-                    self.events.put(
-                        ("media_analysis_result", (generation, index, None, message))
-                    )
+                    self.events.put(("media_analysis_result", (generation, index, None, message)))
                 else:
-                    self.events.put(
-                        ("media_analysis_result", (generation, index, preview, None))
-                    )
+                    self.events.put(("media_analysis_result", (generation, index, preview, None)))
             self.events.put(("media_analysis_done", (generation, len(sources))))
 
         self._analysis_worker = threading.Thread(
@@ -2954,6 +3095,13 @@ class LocalizerWindow:
         )
         has_project = index is not None and index in self._project_paths_by_queue_index
         self.open_task_button.configure(state="normal" if has_project else "disabled")
+        self.enhancement_preview_button.configure(
+            state=(
+                "normal"
+                if has_project and not processing and not self._enhancement_preview_running
+                else "disabled"
+            )
+        )
         self.pause_selected_button.configure(
             state=(
                 "normal"
@@ -2971,9 +3119,7 @@ class LocalizerWindow:
             )
         )
         rendered = self._selected_rendered_path(index)
-        self.open_rendered_button.configure(
-            state="normal" if rendered is not None else "disabled"
-        )
+        self.open_rendered_button.configure(state="normal" if rendered is not None else "disabled")
 
     def _remove_selected_task(self) -> None:
         index = self._selected_task_index()
@@ -3001,6 +3147,58 @@ class LocalizerWindow:
             )
             return
         self._open_local_path(project)
+
+    def _preview_selected_enhancement(self) -> None:
+        from .pipeline import find_source_video, load_project_config, load_project_metadata
+
+        index = self._selected_task_index()
+        root = self._project_paths_by_queue_index.get(index or -1)
+        if root is None or self._enhancement_preview_running:
+            return
+        project = ProjectPaths(root)
+        try:
+            config = load_project_config(project)
+            metadata = load_project_metadata(project)
+            source = find_source_video(project)
+            if config.enhancement.mode == "off":
+                raise LocalizerError("该项目没有启用 AI 画质增强，请先选择通用实拍或动画模式。")
+            if not metadata.width or not metadata.height or not metadata.frame_rate:
+                raise LocalizerError("项目缺少视频分辨率或帧率，无法生成超分对比。")
+        except (OSError, ValueError, LocalizerError) as exc:
+            messagebox.showerror("无法生成超分对比", str(exc), parent=self.root)
+            return
+        duration = min(10.0, max(1.0, metadata.duration))
+        start = max(0.0, min(metadata.duration - duration, metadata.duration / 3))
+        output = project.rendered / f"enhancement_comparison_{start:g}_{duration:g}.mp4"
+        self._enhancement_preview_running = True
+        self._update_task_action_states()
+        self._set_status("正在生成 10 秒超分对比，左侧原画、右侧 AI 增强…", "active")
+
+        def worker() -> None:
+            try:
+                result = render_enhancement_comparison(
+                    source,
+                    output,
+                    source_width=metadata.width,
+                    source_height=metadata.height,
+                    frame_rate=metadata.frame_rate,
+                    source_duration=metadata.duration,
+                    source_audio_codec=metadata.audio_codec,
+                    render=config.render,
+                    enhancement=config.enhancement,
+                    start_seconds=start,
+                    duration_seconds=duration,
+                )
+            except (OSError, ValueError, LocalizerError) as exc:
+                self.events.put(("enhancement_preview", (None, str(exc))))
+            else:
+                self.events.put(("enhancement_preview", (result, None)))
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="localizer-enhancement-preview",
+        ).start()
 
     def _selected_rendered_path(self, index: int | None) -> Path | None:
         project = self._project_paths_by_queue_index.get(index or -1)
@@ -3106,7 +3304,9 @@ class LocalizerWindow:
 
     def _open_direct_media_dialog(self) -> None:
         if self._has_active_processes() or (self.worker and self.worker.is_alive()):
-            messagebox.showinfo("任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root)
+            messagebox.showinfo(
+                "任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root
+            )
             return
         if self.direct_media_dialog is not None and self.direct_media_dialog.window.winfo_exists():
             self.direct_media_dialog.window.lift()
@@ -3127,7 +3327,9 @@ class LocalizerWindow:
         self, initial_url: str | None = None, *, auto_start: bool = False
     ) -> None:
         if self._has_active_processes() or (self.worker and self.worker.is_alive()):
-            messagebox.showinfo("任务进行中", "请先停止当前任务，再抓取新的播放页。", parent=self.root)
+            messagebox.showinfo(
+                "任务进行中", "请先停止当前任务，再抓取新的播放页。", parent=self.root
+            )
             return
         if (
             self.browser_capture_dialog is not None
@@ -3218,7 +3420,9 @@ class LocalizerWindow:
     ) -> None:
         def worker() -> None:
             try:
-                output = render_subtitle_review_preview(session, config, start_seconds=start_seconds)
+                output = render_subtitle_review_preview(
+                    session, config, start_seconds=start_seconds
+                )
             except (OSError, ValueError, LocalizerError) as exc:
                 self.events.put(("review_preview", (callback, None, str(exc))))
             else:
@@ -3303,7 +3507,9 @@ class LocalizerWindow:
 
     def _paste(self) -> None:
         if self._has_active_processes() or (self.worker and self.worker.is_alive()):
-            messagebox.showinfo("任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root)
+            messagebox.showinfo(
+                "任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root
+            )
             return
         try:
             value = self.root.clipboard_get().strip()
@@ -3319,7 +3525,9 @@ class LocalizerWindow:
 
     def _choose_local_file(self) -> None:
         if self._has_active_processes() or (self.worker and self.worker.is_alive()):
-            messagebox.showinfo("任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root)
+            messagebox.showinfo(
+                "任务进行中", "请先停止当前任务，再修改视频队列。", parent=self.root
+            )
             return
         from tkinter import filedialog
 
@@ -3388,7 +3596,11 @@ class LocalizerWindow:
         direction = TRANSLATION_DIRECTIONS[self.direction_label.get()]
         requires_capable_translator = requires_local_ai_or_api(direction)
         allowed_modes = (
-            [label for label, value in TRANSLATION_MODES.items() if value in {"ollama", "openai-compatible"}]
+            [
+                label
+                for label, value in TRANSLATION_MODES.items()
+                if value in {"ollama", "openai-compatible"}
+            ]
             if requires_capable_translator
             else list(TRANSLATION_MODES)
         )
@@ -3400,7 +3612,11 @@ class LocalizerWindow:
                 else "自动翻译并压制字幕（需要 API）"
             )
         allowed_subtitle_modes = (
-            [label for label, value in SUBTITLE_MODES.items() if value in {"download_only", "chinese"}]
+            [
+                label
+                for label, value in SUBTITLE_MODES.items()
+                if value in {"download_only", "chinese"}
+            ]
             if requires_capable_translator
             else list(SUBTITLE_MODES)
         )
@@ -3446,7 +3662,9 @@ class LocalizerWindow:
         queue_count = len(queue_input_values(self.input_value.get()))
         if queue_count > 1:
             parallel = gui_parallel_job_limit(queue_count)
-            summary += f" · 已排队 {queue_count} 个视频（当前电脑最多 {parallel} 个并行，重负载自动排队）"
+            summary += (
+                f" · 已排队 {queue_count} 个视频（当前电脑最多 {parallel} 个并行，重负载自动排队）"
+            )
         self.workflow_summary.set(summary)
         automatic = not download_only and provider == "openai-compatible"
         if automatic and self.settings_visible:
@@ -3540,7 +3758,9 @@ class LocalizerWindow:
             raise ValueError("版权记录不完整：" + " ".join(rights_issues))
         if message := super_resolution_installation_message(enhancement_mode):
             raise ValueError(message)
-        if subtitle_mode != "download_only" and (whisper_message := whisper_model_installation_message()):
+        if subtitle_mode != "download_only" and (
+            whisper_message := whisper_model_installation_message()
+        ):
             raise ValueError(whisper_message)
         values = queue_input_values(self.input_value.get())
         if not values:
@@ -3736,7 +3956,10 @@ class LocalizerWindow:
         else:
             target_name = language_name(self.active_direction, target=True)
             self._append_log(f"当前为自动模式：完成翻译后会继续压制{target_name}字幕。\n\n")
-        self._set_status("正在恢复未完成任务，请保持窗口打开" if retrying else "正在处理，请保持窗口打开", "active")
+        self._set_status(
+            "正在恢复未完成任务，请保持窗口打开" if retrying else "正在处理，请保持窗口打开",
+            "active",
+        )
         self.progress.configure(mode="indeterminate", value=0)
         self.progress.start(10)
         self.stop_requested = False
@@ -3787,7 +4010,9 @@ class LocalizerWindow:
         successful_indices: set[int] = set()
         failed_indices: set[int] = set()
         paused_indices: set[int] = set()
-        parallel_jobs = min(total, getattr(self, "_queue_parallel_limit", gui_parallel_job_limit(total)))
+        parallel_jobs = min(
+            total, getattr(self, "_queue_parallel_limit", gui_parallel_job_limit(total))
+        )
         resolved_task_indices = task_indices or tuple(range(1, total + 1))
         pending = iter(
             (position, task_index, command)
@@ -3851,9 +4076,7 @@ class LocalizerWindow:
                     if not self.stop_requested:
                         submit_next(executor)
         retry_indices = (
-            tuple(
-                index for index in resolved_task_indices if index not in successful_indices
-            )
+            tuple(index for index in resolved_task_indices if index not in successful_indices)
             if self.stop_requested
             else tuple(sorted(failed_indices | paused_indices))
         )
@@ -3906,9 +4129,7 @@ class LocalizerWindow:
             last_download_update = 0.0
             assert process.stdout is not None
             for line in process.stdout:
-                if workspace := project_workspace_from_output(
-                    line, self._current_output_directory
-                ):
+                if workspace := project_workspace_from_output(line, self._current_output_directory):
                     self.events.put(("project_workspace", (queue_index, workspace)))
                 if download := _DOWNLOAD_PROGRESS_RE.search(line):
                     percent = float(download.group(1))
@@ -3978,9 +4199,7 @@ class LocalizerWindow:
                 event, payload = self.events.get_nowait()
                 if event == "line":
                     index, position, total, line = payload  # type: ignore[misc]
-                    prefix = (
-                        f"[队列 {position}/{total} · 任务 {index}] " if int(total) > 1 else ""
-                    )
+                    prefix = f"[队列 {position}/{total} · 任务 {index}] " if int(total) > 1 else ""
                     self._append_log(prefix + str(line))
                     self._update_progress_from_output(
                         str(line),
@@ -4057,10 +4276,13 @@ class LocalizerWindow:
                             )
                         else:
                             self._set_status(f"{total} 个视频信息已就绪，可以开始", "success")
-                        if retain_pending_start_sources(
-                            self._pending_start_sources,
-                            queue_input_values(self.input_value.get()),
-                        ) is not None:
+                        if (
+                            retain_pending_start_sources(
+                                self._pending_start_sources,
+                                queue_input_values(self.input_value.get()),
+                            )
+                            is not None
+                        ):
                             self.root.after(100, self._start)
                 elif event == "done":
                     (
@@ -4096,9 +4318,7 @@ class LocalizerWindow:
                     self._progress_value = min(self._progress_value, 99.0)
                     self.progress.stop()
                     self.progress.configure(mode="determinate", value=self._progress_value)
-                    self._set_status(
-                        f"队列 {position}/{total} · 任务 {index}：正在启动", "active"
-                    )
+                    self._set_status(f"队列 {position}/{total} · 任务 {index}：正在启动", "active")
                     self._update_task_row(
                         int(index),
                         status="正在启动",
@@ -4119,9 +4339,7 @@ class LocalizerWindow:
                         self.progress.configure(mode="determinate", value=self._progress_value)
                     if paused:
                         self._update_task_row(int(index), state_code="paused")
-                        self._set_status(
-                            f"任务 {index} 已暂停；其他队列任务继续运行", "active"
-                        )
+                        self._set_status(f"任务 {index} 已暂停；其他队列任务继续运行", "active")
                     elif int(return_code) == 0:
                         self._update_task_row(
                             int(index), state_code="completed", progress="100%", error=""
@@ -4140,18 +4358,33 @@ class LocalizerWindow:
                 elif event == "failure_bundle":
                     index, _root, bundle, error = payload  # type: ignore[misc]
                     if bundle is not None:
-                        self._append_log(
-                            f"[任务 {index}] 已自动导出脱敏诊断包：{bundle}\n"
-                        )
+                        self._append_log(f"[任务 {index}] 已自动导出脱敏诊断包：{bundle}\n")
                     else:
-                        self._append_log(
-                            f"[任务 {index}] 无法自动导出诊断包：{error}\n"
-                        )
+                        self._append_log(f"[任务 {index}] 无法自动导出诊断包：{error}\n")
                 elif event == "update":
                     self._show_update_result(payload)  # type: ignore[arg-type]
                 elif event == "review_preview":
                     callback, output, error = payload  # type: ignore[misc]
                     callback(output, error)
+                elif event == "enhancement_preview":
+                    result, error = payload  # type: ignore[misc]
+                    self._enhancement_preview_running = False
+                    self._update_task_action_states()
+                    if error:
+                        self._set_status("超分对比生成失败", "error")
+                        messagebox.showerror("超分对比失败", str(error), parent=self.root)
+                    else:
+                        minutes = result.estimated_full_seconds / 60
+                        self._set_status("超分对比已生成", "success")
+                        messagebox.showinfo(
+                            "超分对比已生成",
+                            f"左侧为原画，右侧为 AI 增强。\n\n"
+                            f"预览耗时：{result.elapsed_seconds:.1f} 秒\n"
+                            f"预计整片超分：约 {minutes:.1f} 分钟\n\n"
+                            "估算会随画面复杂度变化。",
+                            parent=self.root,
+                        )
+                        self._open_local_path(result.output)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_events)
@@ -4164,7 +4397,8 @@ class LocalizerWindow:
         queue_position: int | None = None,
     ) -> None:
         update = progress_update_from_output(
-            line, provider=self.active_provider,
+            line,
+            provider=self.active_provider,
             enhancement=getattr(self, "active_enhancement", False),
         )
         if update is None:
@@ -4181,12 +4415,16 @@ class LocalizerWindow:
                 progress=f"{task_progress:.0f}%",
             )
         if self._parallel_queue and queue_index is not None:
-            self._task_progress[queue_index] = max(self._task_progress.get(queue_index, 0.0), task_progress)
+            self._task_progress[queue_index] = max(
+                self._task_progress.get(queue_index, 0.0), task_progress
+            )
             aggregate = 99.0 * sum(self._task_progress.values()) / (100.0 * self.active_queue_total)
         else:
-            aggregate = 99.0 * (
-                (self.active_queue_index - 1) + task_progress / 100
-            ) / self.active_queue_total
+            aggregate = (
+                99.0
+                * ((self.active_queue_index - 1) + task_progress / 100)
+                / self.active_queue_total
+            )
         self._progress_value = max(self._progress_value, min(99.0, aggregate))
         self.progress.configure(value=self._progress_value)
         prefix = (
@@ -4230,9 +4468,7 @@ class LocalizerWindow:
             if "--resume" not in resumed:
                 resumed.append("--resume")
             self._retry_commands.append(resumed)
-        self.retry_failed_button.configure(
-            state="normal" if self._retry_commands else "disabled"
-        )
+        self.retry_failed_button.configure(state="normal" if self._retry_commands else "disabled")
         self._update_task_action_states()
         self.root.after(200, self._update_task_action_states)
         notify_window_attention(self.root)
@@ -4244,8 +4480,7 @@ class LocalizerWindow:
                 f"任务已停止；可恢复 {remaining} 个未完成任务" if remaining else "任务已停止"
             )
             self._append_log(
-                f"\n任务已停止；已完成阶段会保留。"
-                f"可点击“重试未完成任务”恢复 {remaining} 个项目。\n"
+                f"\n任务已停止；已完成阶段会保留。可点击“重试未完成任务”恢复 {remaining} 个项目。\n"
             )
             for index in retry_indices:
                 self._update_task_row(int(index), state_code="paused")
@@ -4289,7 +4524,9 @@ class LocalizerWindow:
         elif provider == "manual":
             source_name = "中文" if self.active_direction == "zh-to-en" else "英文"
             target_name = "英文" if self.active_direction == "zh-to-en" else "中文"
-            self._set_status(f"{total} 个任务的下载和{source_name}字幕已完成，等待人工翻译", "success")
+            self._set_status(
+                f"{total} 个任务的下载和{source_name}字幕已完成，等待人工翻译", "success"
+            )
             messagebox.showinfo(
                 "第一阶段完成",
                 f"{total} 个视频和{source_name}字幕已经准备好。请在所选输出文件夹内项目的 "
@@ -4300,8 +4537,10 @@ class LocalizerWindow:
         else:
             target_code = self.active_direction.split("-to-", maxsplit=1)[1]
             target_name = language_name(self.active_direction, target=True)
-            output_name = f"{target_code}_hardsub.mp4" if target_code not in {"en", "zh"} else (
-                "english_hardsub.mp4" if target_code == "en" else "chinese_hardsub.mp4"
+            output_name = (
+                f"{target_code}_hardsub.mp4"
+                if target_code not in {"en", "zh"}
+                else ("english_hardsub.mp4" if target_code == "en" else "chinese_hardsub.mp4")
             )
             self._set_status(f"本地化完成，已生成 {total} 个{target_name}字幕视频", "success")
             messagebox.showinfo(
@@ -4332,7 +4571,9 @@ class LocalizerWindow:
         self.log.configure(state="disabled")
 
     def _open_output(self) -> None:
-        output = Path(self.output_directory.get().strip() or default_output_directory()).expanduser()
+        output = Path(
+            self.output_directory.get().strip() or default_output_directory()
+        ).expanduser()
         output.mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
             os.startfile(output)  # type: ignore[attr-defined]
@@ -4375,7 +4616,9 @@ class LocalizerWindow:
         if self.browser_capture_dialog is not None:
             self.browser_capture_dialog.cancel_event.set()
         process_running = self._has_active_processes()
-        worker_running = self.worker is not None and self.worker.is_alive()
+        worker_running = (
+            self.worker is not None and self.worker.is_alive()
+        ) or self._enhancement_preview_running
         if process_running or worker_running:
             if not messagebox.askyesno(
                 "退出工具",

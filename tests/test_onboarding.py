@@ -71,9 +71,7 @@ def test_help_center_readiness_is_actionable_without_blocking_optional_ai() -> N
 
     assert next(item for item in items if item.title == "语音识别模型").status == "action"
     assert next(item for item in items if item.title == "翻译方式").status == "optional"
-    assert "避免电脑卡死" in next(
-        item for item in items if item.title == "性能调度"
-    ).detail
+    assert "避免电脑卡死" in next(item for item in items if item.title == "性能调度").detail
     assert quick_readiness_message((), local_ai_ready=False, resource_mode="serialized") == (
         "本机状态：未安装 Whisper · 本地快速翻译 · 安全调度"
     )

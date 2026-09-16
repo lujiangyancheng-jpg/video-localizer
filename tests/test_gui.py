@@ -108,7 +108,9 @@ def test_build_process_command_rejects_invalid_values() -> None:
 
 
 def test_queue_input_values_keeps_local_paths_and_deduplicates_lines() -> None:
-    assert queue_input_values("  https://youtu.be/one  \nC:/Videos/My clip.mp4\nhttps://youtu.be/one\n") == [
+    assert queue_input_values(
+        "  https://youtu.be/one  \nC:/Videos/My clip.mp4\nhttps://youtu.be/one\n"
+    ) == [
         "https://youtu.be/one",
         "C:/Videos/My clip.mp4",
     ]
@@ -211,7 +213,7 @@ def test_start_routes_dynamic_page_through_browser_capture_before_pipeline() -> 
     window._has_active_processes = lambda: False
     window.worker = None
     window._analysis_worker = None
-    window._validate = lambda: ([['python', 'main.py', 'process', page]], {}, "download_only")
+    window._validate = lambda: ([["python", "main.py", "process", page]], {}, "download_only")
     window.input_value = FakeVariable()
     window._media_preview_errors = {1: "该站点要求 Cloudflare 浏览器验证"}
     window._browser_capture_prompted_sources = set()
@@ -220,8 +222,8 @@ def test_start_routes_dynamic_page_through_browser_capture_before_pipeline() -> 
     opened: list[tuple[str, bool]] = []
     started: list[object] = []
     window._set_status = lambda message, state: statuses.append((message, state))
-    window._open_browser_capture_dialog = (
-        lambda source, auto_start=False: opened.append((source, auto_start))
+    window._open_browser_capture_dialog = lambda source, auto_start=False: opened.append(
+        (source, auto_start)
     )
     window._begin_queue = lambda *args, **kwargs: started.append((args, kwargs))
 
@@ -271,15 +273,18 @@ def test_project_workspace_from_output_accepts_only_selected_output_root(tmp_pat
     workspace = output_root / "example"
     workspace.mkdir(parents=True)
 
-    assert project_workspace_from_output(
-        f"Project workspace: {workspace}", output_root
-    ) == workspace.resolve()
-    assert project_workspace_from_output(
-        f"INFO Project workspace: {workspace}", output_root
-    ) == workspace.resolve()
-    assert project_workspace_from_output(
-        f"Project workspace: {tmp_path / 'outside'}", output_root
-    ) is None
+    assert (
+        project_workspace_from_output(f"Project workspace: {workspace}", output_root)
+        == workspace.resolve()
+    )
+    assert (
+        project_workspace_from_output(f"INFO Project workspace: {workspace}", output_root)
+        == workspace.resolve()
+    )
+    assert (
+        project_workspace_from_output(f"Project workspace: {tmp_path / 'outside'}", output_root)
+        is None
+    )
     assert project_workspace_from_output("unrelated logging", output_root) is None
 
 

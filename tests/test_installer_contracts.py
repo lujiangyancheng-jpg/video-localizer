@@ -39,7 +39,9 @@ def test_base_installer_uses_the_native_launcher_not_a_cmd_wrapper() -> None:
 
     assert 'Filename: "{app}\\Localize Studio.exe"' in script
     assert "Localize Studio Launcher.exe" in script
-    assert "InstallLocation" in (INSTALLER / "LocalizeStudioLauncher.cs").read_text(encoding="utf-8")
+    assert "InstallLocation" in (INSTALLER / "LocalizeStudioLauncher.cs").read_text(
+        encoding="utf-8"
+    )
     assert "Launch Localizer.cmd" not in script
     assert "build_launcher.ps1" in builder
     assert 'ArgumentList "--verify"' in verifier
@@ -90,9 +92,9 @@ def test_standard_uses_one_pinned_compact_ffmpeg_runtime() -> None:
     assert 'PackageTier == "Standard"' in installer
     assert "ffmpeg-$FfmpegStandardVersion-essentials_build.zip" in builder
     assert "FfmpegStandardArchiveSha256" in builder
-    assert 'if ($IsStandardPackage)' in builder
-    assert 'if ($IsCompletePackage)' in verifier
-    assert 'runtime\\ffmpeg-nvenc-compat\\bin\\ffmpeg.exe' in verifier
+    assert "if ($IsStandardPackage)" in builder
+    assert "if ($IsCompletePackage)" in verifier
+    assert "runtime\\ffmpeg-nvenc-compat\\bin\\ffmpeg.exe" in verifier
     assert "assert not nvenc_compatibility_ffmpeg()" in builder
 
 
@@ -107,9 +109,9 @@ def test_desktop_install_verification_isolated_from_the_users_saved_queue() -> N
     builder = (INSTALLER / "build_offline_installer.ps1").read_text(encoding="utf-8")
     verifier = (INSTALLER / "test_offline_install.ps1").read_text(encoding="utf-8")
 
-    assert '$previousLocalAppData = $env:LOCALAPPDATA' in builder
-    assert '$env:LOCALAPPDATA = $SmokeLocalAppData' in builder
-    assert '$env:LOCALAPPDATA = $VerificationLocalAppData' in verifier
+    assert "$previousLocalAppData = $env:LOCALAPPDATA" in builder
+    assert "$env:LOCALAPPDATA = $SmokeLocalAppData" in builder
+    assert "$env:LOCALAPPDATA = $VerificationLocalAppData" in verifier
 
 
 def test_model_pack_refuses_missing_or_mismatched_base_installations() -> None:
@@ -160,7 +162,7 @@ def test_super_resolution_pack_is_pinned_and_probes_safe_device_fallbacks() -> N
 
     assert 'RuntimeVersion = "20250915"' in builder
     assert "7425BE94B94E4C8F37A1E433AC0E0100C43790E2C37418F4B65D8235ADFBDC87" in builder
-    assert 'foreach ($GpuId in @(0, 1, -1))' in builder
+    assert "foreach ($GpuId in @(0, 1, -1))" in builder
     assert "models-upconv_7_photo" in builder
     assert "models-cunet" in builder
     assert "super-resolution-pack.json" in script

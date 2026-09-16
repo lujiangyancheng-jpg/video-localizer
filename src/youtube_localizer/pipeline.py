@@ -25,7 +25,11 @@ from .download.youtube import (
     save_thumbnail,
     youtube_video_id,
 )
-from .enhancement.super_resolution import enhance_video, super_resolution_target_height
+from .enhancement.super_resolution import (
+    cleanup_enhancement_checkpoints,
+    enhance_video,
+    super_resolution_target_height,
+)
 from .errors import InputValidationError, LocalizerError, ProjectExistsError
 from .inspection_cache import cached_raw_metadata, load_cached_inspection
 from .logging_config import configure_logging
@@ -33,7 +37,7 @@ from .models import ProjectPaths, SourceMetadata, SubtitleCue
 from .preflight import build_job_preflight
 from .publishing.metadata_generator import generate_publishing_assets
 from .publishing.rights import generate_rights_assets, validate_rights
-from .rendering.ffmpeg import render_hardsub, render_softsub
+from .rendering.ffmpeg import render_hardsub, render_softsub, render_video_transform
 from .rendering.media_warnings import rendering_media_warnings
 from .rendering.validation import validate_rendered_video
 from .reporting import build_report, write_report
@@ -82,6 +86,8 @@ def _group_local_ai_paragraphs(
     cues: list[SubtitleCue], *, source_code: str
 ) -> list[list[SubtitleCue]]:
     return group_paragraph_cues(cues, source_code=source_code, **LOCAL_AI_GROUPING)
+
+
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi"}
 FORCE_STEPS = {
     "acquire",
@@ -303,10 +309,14 @@ def rendered_output(project: ProjectPaths, config: AppConfig) -> Path:
 
 
 def enhancement_config_hash(config: AppConfig, target_height: int) -> str:
-    return stable_hash({
-        "pipeline_version": 2, "enhancement": config.enhancement,
-        "target_height": target_height, "render": config.render,
-    })
+    return stable_hash(
+        {
+            "pipeline_version": 2,
+            "enhancement": config.enhancement,
+            "target_height": target_height,
+            "render": config.render,
+        }
+    )
 
 
 def render_source(project: ProjectPaths, config: AppConfig) -> Path:
@@ -318,7 +328,8 @@ def render_source(project: ProjectPaths, config: AppConfig) -> Path:
     if target <= (metadata.height or 0):
         return source
     if PipelineState(project.state_file).can_skip(
-        "enhance", input_hash=hash_file(source),
+        "enhance",
+        input_hash=hash_file(source),
         config_hash=enhancement_config_hash(config, target),
         output_files=[project.enhanced_source],
     ):
@@ -368,7 +379,9 @@ def _write_localized_subtitles(
             bilingual_mode="chinese" if target_code == "zh" else "english",
             video_size=video_size,
         )
-        return [target_srt, target_ass], [f"Cue {issue.cue_id}: {issue.message}" for issue in issues]
+        return [target_srt, target_ass], [
+            f"Cue {issue.cue_id}: {issue.message}" for issue in issues
+        ]
 
     if config.translation.direction == "zh-to-en":
         write_srt(project.english_srt, english)
@@ -772,9 +785,7 @@ def process_pipeline(
             try:
                 previous_report = load_json(previous_report_path)
                 previous_warnings = (
-                    previous_report.get("warnings", [])
-                    if isinstance(previous_report, dict)
-                    else []
+                    previous_report.get("warnings", []) if isinstance(previous_report, dict) else []
                 )
                 if isinstance(previous_warnings, list):
                     state.data.warnings = [str(warning) for warning in previous_warnings]
@@ -937,7 +948,8 @@ def process_pipeline(
                 remember_warnings(
                     [
                         "AI super resolution was selected, but the requested output is not "
-                        "larger than the source; the original pixels were kept."
+                        "larger than the source, so AI enlargement was skipped. Requested "
+                        "output resolution and frame-rate limits are still applied."
                     ]
                 )
             else:
@@ -968,6 +980,53 @@ def process_pipeline(
                                 enhancement=config.enhancement,
                                 working_directory=project.temp / "super_resolution",
                                 force="enhance" in force_steps,
+                            )
+                        )
+                        validate_rendered_video(
+                            project.enhanced_source,
+                            expected_duration=metadata.duration,
+                        )
+                # The step context fingerprints the validated output before checkpoints are
+                # discarded. A failed validation therefore retains every resumable segment.
+                cleanup_enhancement_checkpoints(project.temp / "super_resolution")
+                processing_video = project.enhanced_source
+                outputs.append(processing_video)
+
+        if config.subtitle_mode == "download_only" and processing_video == source_video:
+            needs_transform = (
+                config.render.output_height is not None
+                and metadata.height is not None
+                and config.render.output_height < metadata.height
+            ) or (
+                config.render.output_fps is not None
+                and metadata.frame_rate is not None
+                and config.render.output_fps < metadata.frame_rate - 0.5
+            )
+            if needs_transform:
+                source_hash = hash_file(source_video)
+                transform_config_hash = stable_hash(
+                    {"pipeline_version": 1, "transform": config.render}
+                )
+                if not state.can_skip(
+                    "enhance",
+                    input_hash=source_hash,
+                    config_hash=transform_config_hash,
+                    output_files=[project.enhanced_source],
+                    force="enhance" in force_steps,
+                ):
+                    with state.step(
+                        "enhance",
+                        input_hash=source_hash,
+                        config_hash=transform_config_hash,
+                    ) as step_outputs:
+                        step_outputs.append(
+                            render_video_transform(
+                                source_video,
+                                project.enhanced_source,
+                                config.render,
+                                source_audio_codec=metadata.audio_codec,
+                                expected_duration=metadata.duration,
+                                source_frame_rate=metadata.frame_rate,
                             )
                         )
                         validate_rendered_video(
@@ -1223,11 +1282,19 @@ def process_pipeline(
             outputs.extend(metadata_outputs)
 
         target_cues = parse_subtitle(_target_subtitle(project, config))
+        source_path = _source_subtitle(project, config)
+        source_quality_cues = parse_subtitle(source_path) if source_path.is_file() else []
+        glossary_path = Path(config.translation.glossary_file)
+        if not glossary_path.is_absolute():
+            candidates = [project.root / glossary_path, Path.cwd() / glossary_path]
+            glossary_path = next((path for path in candidates if path.is_file()), candidates[0])
         quality = audit_subtitles(
             target_cues,
             language=target_code,
             max_lines=config.subtitles.max_lines,
             preferred_line_length=config.subtitles.max_chinese_chars_per_line,
+            source_cues=source_quality_cues,
+            glossary=load_glossary(glossary_path),
         )
         flagged_cues.extend(quality["flagged_cue_ids"])
         quality_path = project.logs / "subtitle_quality.json"
@@ -1295,9 +1362,7 @@ def process_pipeline(
                 else ""
             ),
             translation_provider=(
-                "youtube-provided"
-                if provided_chinese_is_target
-                else config.translation.provider
+                "youtube-provided" if provided_chinese_is_target else config.translation.provider
             ),
             cue_count=cue_count,
             flagged_cues=sorted(set(flagged_cues)),

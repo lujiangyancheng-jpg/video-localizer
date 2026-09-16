@@ -162,7 +162,13 @@ def _join_target_units(units: list[str], target_code: str) -> str:
         return " ".join(units)
     output = ""
     for unit in units:
-        if output and output[-1].isascii() and output[-1].isalnum() and unit[0].isascii() and unit[0].isalnum():
+        if (
+            output
+            and output[-1].isascii()
+            and output[-1].isalnum()
+            and unit[0].isascii()
+            and unit[0].isalnum()
+        ):
             output += " "
         output += unit
     return output
@@ -349,9 +355,7 @@ def install_offline_model_archive(
     target_code: str = "zh",
 ) -> Path:
     """Validate and atomically install an Argos-compatible translation model archive."""
-    existing = validate_offline_model(
-        destination, source_code=source_code, target_code=target_code
-    )
+    existing = validate_offline_model(destination, source_code=source_code, target_code=target_code)
     if existing is not None:
         return destination
     if destination.exists():
@@ -369,13 +373,13 @@ def install_offline_model_archive(
                 _validate_archive_members(archive)
                 archive.extractall(temporary_root)
         except (OSError, zipfile.BadZipFile) as exc:
-            raise LocalizerError(f"The offline translation model archive is invalid: {exc}") from exc
+            raise LocalizerError(
+                f"The offline translation model archive is invalid: {exc}"
+            ) from exc
         candidates = [
             path
             for path in temporary_root.rglob("metadata.json")
-            if validate_offline_model(
-                path.parent, source_code=source_code, target_code=target_code
-            )
+            if validate_offline_model(path.parent, source_code=source_code, target_code=target_code)
             is not None
         ]
         if len(candidates) != 1:
@@ -450,9 +454,10 @@ def ensure_offline_model(
     target_code: str = "zh",
 ) -> Path:
     model_directory = model_directory.expanduser()
-    if validate_offline_model(
-        model_directory, source_code=source_code, target_code=target_code
-    ) is not None:
+    if (
+        validate_offline_model(model_directory, source_code=source_code, target_code=target_code)
+        is not None
+    ):
         return model_directory
     if (bundled := find_bundled_model(model_directory.name)) and validate_offline_model(
         bundled, source_code=source_code, target_code=target_code
@@ -509,7 +514,7 @@ class LocalOfflineProvider(TranslationProvider):
             import sentencepiece as spm
         except ImportError as exc:
             raise LocalizerError(
-                'Offline translation dependencies are missing. Run: python -m pip install -e '
+                "Offline translation dependencies are missing. Run: python -m pip install -e "
                 '".[offline-translation]"'
             ) from exc
 

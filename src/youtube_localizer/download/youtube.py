@@ -102,9 +102,7 @@ def discover_javascript_runtimes() -> dict[str, str]:
 def _enable_javascript_runtime(options: dict[str, Any]) -> None:
     runtimes = discover_javascript_runtimes()
     if runtimes:
-        options["js_runtimes"] = {
-            runtime: {"path": path} for runtime, path in runtimes.items()
-        }
+        options["js_runtimes"] = {runtime: {"path": path} for runtime, path in runtimes.items()}
 
 
 def _validate_info(info: dict[str, Any]) -> None:

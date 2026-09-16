@@ -36,10 +36,7 @@ def test_owned_source_generates_auditable_rights_assets(tmp_path) -> None:
 
 
 def test_creative_commons_requires_a_public_license_link() -> None:
-    assert any(
-        "许可页面链接" in issue
-        for issue in validate_rights(RightsConfig(basis="cc_by"))
-    )
+    assert any("许可页面链接" in issue for issue in validate_rights(RightsConfig(basis="cc_by")))
 
 
 def test_noncommercial_license_rejects_commercial_declaration() -> None:

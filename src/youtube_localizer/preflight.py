@@ -73,7 +73,15 @@ def _estimated_source_bytes(metadata: SourceMetadata) -> int:
         return 4 * _GIB
     height = metadata.height or 1080
     megabits_per_second = (
-        100 if height > 2160 else 45 if height > 1440 else 24 if height > 1080 else 12 if height > 720 else 6
+        100
+        if height > 2160
+        else 45
+        if height > 1440
+        else 24
+        if height > 1080
+        else 12
+        if height > 720
+        else 6
     )
     return int(metadata.duration * megabits_per_second * 1_000_000 / 8)
 
@@ -82,10 +90,35 @@ def estimate_working_bytes(metadata: SourceMetadata, config: AppConfig) -> int:
     """Return a conservative workspace estimate for a high-quality localized job."""
     source_bytes = _estimated_source_bytes(metadata)
     if config.enhancement.mode != "off":
-        # Frame restoration uses bounded batches, but the original, enhanced intermediate,
-        # optional hard-sub encode, and safety headroom can coexist until validation completes.
-        multiplier = 3.2 if config.subtitle_mode == "download_only" else 5.0
-        return max(12 * _GIB, int(source_bytes * multiplier) + 2 * _GIB)
+        source_height = metadata.height or 1080
+        source_width = metadata.width or round(source_height * 16 / 9)
+        requested = config.render.output_height
+        automatic = min(
+            source_height * config.enhancement.scale,
+            config.enhancement.max_auto_height,
+        )
+        target_height = min(
+            requested if requested is not None else automatic,
+            source_height * 4,
+            4320,
+        )
+        target_height = max(source_height, target_height)
+        model_height = source_height * (4 if target_height > source_height * 2 else 2)
+        model_width = max(2, round(source_width * model_height / source_height))
+        frame_rate = min(
+            metadata.frame_rate or 30,
+            config.render.output_fps or metadata.frame_rate or 30,
+        )
+        # Checkpoints coexist with the final enhanced file until it passes validation.  The
+        # pixel-rate floor prevents a tiny low-bitrate source from hiding the real 4K cost.
+        pixel_rate_estimate = int(
+            max(1, metadata.duration) * model_width * model_height * frame_rate * 0.035
+        )
+        resolution_ratio = (model_height / source_height) ** 2
+        bitrate_scaled_estimate = int(source_bytes * resolution_ratio)
+        enhanced_bytes = max(pixel_rate_estimate, bitrate_scaled_estimate)
+        copies = 2 if config.subtitle_mode == "download_only" else 3
+        return max(12 * _GIB, source_bytes + enhanced_bytes * copies + 2 * _GIB)
     if config.subtitle_mode == "download_only":
         return max(4 * _GIB, int(source_bytes * 1.35) + 512 * 1024**2)
     # The project temporarily holds a source copy, extracted audio, subtitles, and a final
@@ -167,9 +200,7 @@ def _with_resource_safe_fallback(
     ]
     low_vram = bool(available_vram and max(available_vram) < 6 * 1024)
     low_memory_cpu = (
-        not gpus
-        and resources.memory_mib is not None
-        and resources.memory_mib < 12 * 1024
+        not gpus and resources.memory_mib is not None and resources.memory_mib < 12 * 1024
     )
     if (
         result.transcription.model == "medium"
@@ -182,9 +213,7 @@ def _with_resource_safe_fallback(
         )
         result = result.model_copy(update={"transcription": transcription})
         reason = (
-            "available NVIDIA VRAM is below 6 GiB"
-            if low_vram
-            else "system memory is below 12 GiB"
+            "available NVIDIA VRAM is below 6 GiB" if low_vram else "system memory is below 12 GiB"
         )
         warnings.append(
             f"{reason}; auto mode switched to Whisper Small to keep Windows responsive."
@@ -235,9 +264,7 @@ def build_job_preflight(metadata: SourceMetadata, config: AppConfig) -> JobPrefl
             gpu_detail = "NVIDIA CUDA when the bundled runtime passes its safety check"
             if not gpus:
                 gpu_detail = f"CPU int8 using up to {recommended_cpu_threads(resources)} thread(s)"
-            transcription_plan = (
-                f"Whisper {effective_config.transcription.model} on {gpu_detail}; CPU fallback is automatic."
-            )
+            transcription_plan = f"Whisper {effective_config.transcription.model} on {gpu_detail}; CPU fallback is automatic."
         enhancement_detail = (
             f" AI {effective_config.enhancement.mode} restoration runs locally through NCNN/Vulkan."
             if effective_config.enhancement.mode != "off"

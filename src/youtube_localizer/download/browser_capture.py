@@ -179,7 +179,9 @@ def _player_candidates(message: dict[str, Any]) -> tuple[BrowserMediaCandidate, 
     return tuple(candidates)
 
 
-def _send_command(connection: Any, command_id: int, method: str, params: dict[str, Any] | None = None) -> None:
+def _send_command(
+    connection: Any, command_id: int, method: str, params: dict[str, Any] | None = None
+) -> None:
     payload: dict[str, Any] = {"id": command_id, "method": method}
     if params:
         payload["params"] = params
@@ -264,9 +266,7 @@ def _wait_for_devtools(port: int, process: subprocess.Popen[bytes]) -> None:
             if process.poll() is not None:
                 exited_at = exited_at or time.monotonic()
                 if time.monotonic() - exited_at >= 2:
-                    raise LocalizerError(
-                        "Microsoft Edge 在媒体抓取窗口准备完成前退出。"
-                    ) from None
+                    raise LocalizerError("Microsoft Edge 在媒体抓取窗口准备完成前退出。") from None
             time.sleep(0.1)
             continue
     raise LocalizerError("Microsoft Edge 抓取窗口启动超时。请确认 Edge 可以正常打开。")

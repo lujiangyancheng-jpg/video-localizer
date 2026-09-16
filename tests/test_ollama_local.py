@@ -74,12 +74,8 @@ def test_local_ai_translates_a_complete_paragraph_and_caches_it(tmp_path) -> Non
 
 def test_local_ai_retries_runaway_translation_output(tmp_path) -> None:
     tags = _response({"models": [{"name": "qwen3:4b"}]})
-    runaway = _response(
-        {"message": {"content": json.dumps({"translation": "1. " * 1000})}}
-    )
-    recovered = _response(
-        {"message": {"content": json.dumps({"translation": "自然的完整段落。"})}}
-    )
+    runaway = _response({"message": {"content": json.dumps({"translation": "1. " * 1000})}})
+    recovered = _response({"message": {"content": json.dumps({"translation": "自然的完整段落。"})}})
     cues = [SubtitleCue(id=1, start_ms=0, end_ms=3000, text="A complete paragraph.")]
     with (
         patch("youtube_localizer.translation.ollama_local.httpx.get", return_value=tags),

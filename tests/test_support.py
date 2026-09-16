@@ -8,7 +8,9 @@ from youtube_localizer.support import create_support_bundle
 from youtube_localizer.utils.files import atomic_write_json
 
 
-def test_support_bundle_redacts_identifiers_credentials_and_media_text(tmp_path, monkeypatch) -> None:
+def test_support_bundle_redacts_identifiers_credentials_and_media_text(
+    tmp_path, monkeypatch
+) -> None:
     from youtube_localizer import support
 
     project = ProjectPaths(tmp_path / "project")
@@ -29,7 +31,10 @@ def test_support_bundle_redacts_identifiers_credentials_and_media_text(tmp_path,
     )
     atomic_write_json(
         project.logs / "report.json",
-        {"source": metadata.model_dump(mode="json"), "warnings": ["See C:\\Users\\Alice\\video.mp4"]},
+        {
+            "source": metadata.model_dump(mode="json"),
+            "warnings": ["See C:\\Users\\Alice\\video.mp4"],
+        },
     )
     (project.logs / "pipeline.log").write_text(
         "API key=super-secret https://youtube.example/private C:\\Users\\Alice\\video.mp4\n",

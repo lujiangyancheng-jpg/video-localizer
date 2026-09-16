@@ -16,13 +16,9 @@ from youtube_localizer.subtitles.parser import parse_subtitle
 
 def test_extra_language_requires_local_ai_or_api() -> None:
     with pytest.raises(ConfigurationError, match="require the local AI"):
-        validate_config_data(
-            {"translation": {"direction": "zh-to-es", "provider": "offline"}}
-        )
+        validate_config_data({"translation": {"direction": "zh-to-es", "provider": "offline"}})
 
-    config = validate_config_data(
-        {"translation": {"direction": "zh-to-es", "provider": "ollama"}}
-    )
+    config = validate_config_data({"translation": {"direction": "zh-to-es", "provider": "ollama"}})
 
     assert config.translation.direction == "zh-to-es"
     assert config.translation.provider == "ollama"

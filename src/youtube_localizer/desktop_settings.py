@@ -22,12 +22,8 @@ VALID_DIRECTIONS = frozenset(
     for target in ("zh", "en", "ja", "ko", "es", "fr", "de", "pt", "ru", "ar")
     if source != target
 )
-VALID_SUBTITLE_MODES = frozenset(
-    {"download_only", "chinese", "bilingual_en_zh", "bilingual_zh_en"}
-)
-VALID_TRANSLATION_PROVIDERS = frozenset(
-    {"manual", "offline", "ollama", "openai-compatible"}
-)
+VALID_SUBTITLE_MODES = frozenset({"download_only", "chinese", "bilingual_en_zh", "bilingual_zh_en"})
+VALID_TRANSLATION_PROVIDERS = frozenset({"manual", "offline", "ollama", "openai-compatible"})
 VALID_OUTPUT_QUALITIES = frozenset({"best", "high", "standard"})
 VALID_OUTPUT_FPS = frozenset({None, 30, 60})
 VALID_OUTPUT_HEIGHTS = frozenset({None, 480, 720, 1080, 1440, 2160, 4320})

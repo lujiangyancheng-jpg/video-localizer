@@ -163,7 +163,9 @@ def test_extensionless_video_url_is_verified_by_content_type_before_inspection()
     assert metadata.video_id == direct_media_id(url)
 
 
-def test_resuming_a_direct_media_project_refreshes_an_expired_signed_url(tmp_path, monkeypatch) -> None:
+def test_resuming_a_direct_media_project_refreshes_an_expired_signed_url(
+    tmp_path, monkeypatch
+) -> None:
     first = "https://cdn.example.test/owned/demo.m3u8?token=first"
     refreshed = "https://cdn.example.test/owned/demo.m3u8?token=second"
     app_config = AppConfig(output_directory=tmp_path)
