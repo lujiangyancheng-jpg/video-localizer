@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass
 
@@ -19,11 +20,32 @@ def _visible_text(text: str) -> str:
 
 
 def _word_count(text: str) -> int:
-    return len(re.findall(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)?", text))
+    return len(re.findall(r"[^\W_]+(?:['’-][^\W_]+)?", text, flags=re.UNICODE))
 
 
 def _cjk_count(text: str) -> int:
     return len(re.findall(r"[\u3400-\u9fff]", text))
+
+
+def _script_character_count(text: str, language: str) -> int:
+    if language == "ja":
+        return len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+    if language == "ko":
+        return len(re.findall(r"[\uac00-\ud7af]", text))
+    return _cjk_count(text)
+
+
+def _numbers(text: str) -> list[str]:
+    normalized = (
+        unicodedata.normalize("NFKC", text).replace("٬", ",").replace("٫", ".").replace("٪", "%")
+    )
+    values = re.findall(r"\d+(?:[.,]\d+)*%?", normalized)
+    return [
+        "".join(str(unicodedata.digit(char)) if char.isdigit() else char for char in value).replace(
+            ",", ""
+        )
+        for value in values
+    ]
 
 
 def audit_subtitles(
@@ -32,6 +54,8 @@ def audit_subtitles(
     language: str,
     max_lines: int,
     preferred_line_length: int,
+    source_cues: list[SubtitleCue] | None = None,
+    glossary: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Return deterministic, review-oriented subtitle checks for the final target track.
 
@@ -40,7 +64,9 @@ def audit_subtitles(
     """
     findings: list[SubtitleQualityFinding] = []
     previous_visible = ""
-    is_chinese = language.lower().startswith("zh")
+    language = language.lower().split("-", maxsplit=1)[0]
+    source_by_id = {cue.id: cue for cue in source_cues or []}
+    glossary = glossary or {}
     for cue in cues:
         visible = _visible_text(cue.text)
         if not visible:
@@ -59,7 +85,16 @@ def audit_subtitles(
                     f"Uses {len(lines)} lines; the selected style prefers at most {max_lines}.",
                 )
             )
-        if any(len(line) > preferred_line_length * 1.5 for line in lines):
+        line_multiplier = (
+            1.5
+            if language == "zh"
+            else 1.7
+            if language == "ja"
+            else 2.0
+            if language == "ko"
+            else 3.0
+        )
+        if any(len(line) > preferred_line_length * line_multiplier for line in lines):
             findings.append(
                 SubtitleQualityFinding(
                     cue.id,
@@ -67,24 +102,28 @@ def audit_subtitles(
                     "A subtitle line still exceeds the preferred display width.",
                 )
             )
-        if is_chinese:
-            reading_speed = _cjk_count(visible) / duration_seconds
-            if reading_speed > 10:
+        if language in {"zh", "ja", "ko"}:
+            reading_speed = _script_character_count(visible, language) / duration_seconds
+            preferred_speed = {"zh": 10.0, "ja": 12.0, "ko": 11.0}[language]
+            if reading_speed > preferred_speed:
                 findings.append(
                     SubtitleQualityFinding(
                         cue.id,
                         "reading_speed",
-                        f"Chinese reading speed is {reading_speed:.1f} characters/second (preferred ≤10).",
+                        f"{language.upper()} reading speed is {reading_speed:.1f} characters/second "
+                        f"(preferred ≤{preferred_speed:g}).",
                     )
                 )
         else:
             reading_speed = _word_count(visible) / duration_seconds
-            if reading_speed > 4.5:
+            preferred_speed = 3.5 if language == "ar" else 4.5
+            if reading_speed > preferred_speed:
                 findings.append(
                     SubtitleQualityFinding(
                         cue.id,
                         "reading_speed",
-                        f"English reading speed is {reading_speed:.1f} words/second (preferred ≤4.5).",
+                        f"{language.upper()} reading speed is {reading_speed:.1f} words/second "
+                        f"(preferred ≤{preferred_speed:g}).",
                     )
                 )
         normalized = re.sub(r"\s+", " ", visible).casefold()
@@ -97,6 +136,31 @@ def audit_subtitles(
                 )
             )
         previous_visible = normalized
+
+        source = source_by_id.get(cue.id)
+        if source is not None:
+            source_numbers = _numbers(source.text)
+            target_numbers = _numbers(visible)
+            if source_numbers != target_numbers:
+                findings.append(
+                    SubtitleQualityFinding(
+                        cue.id,
+                        "number_consistency",
+                        f"Numbers differ from source: {source_numbers} -> {target_numbers}.",
+                    )
+                )
+            for source_term, target_term in glossary.items():
+                if (
+                    source_term.casefold() in source.text.casefold()
+                    and target_term.casefold() not in visible.casefold()
+                ):
+                    findings.append(
+                        SubtitleQualityFinding(
+                            cue.id,
+                            "term_consistency",
+                            f"Expected glossary translation {source_term!r} -> {target_term!r}.",
+                        )
+                    )
 
     category_counts = Counter(finding.category for finding in findings)
     flagged_cue_ids = sorted({finding.cue_id for finding in findings})
@@ -114,5 +178,9 @@ def audit_subtitles(
 def select_review_cues(cues: list[SubtitleCue], report: dict[str, object]) -> list[SubtitleCue]:
     """Keep only timed cues flagged by the deterministic final-subtitle audit."""
     raw_ids = report.get("flagged_cue_ids", [])
-    flagged_ids = {value for value in raw_ids if isinstance(value, int)} if isinstance(raw_ids, list) else set()
+    flagged_ids = (
+        {value for value in raw_ids if isinstance(value, int)}
+        if isinstance(raw_ids, list)
+        else set()
+    )
     return [cue for cue in cues if cue.id in flagged_ids]

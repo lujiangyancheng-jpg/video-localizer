@@ -197,14 +197,10 @@ def parse_imported_translations(
                 f"{ms_to_srt(source.start_ms)} --> {ms_to_srt(source.end_ms)}."
             )
         if str(item[source_code]).strip() != source.text.strip():
-            raise TranslationImportError(
-                f"Cue {cue_id} {source_code} source text changed."
-            )
+            raise TranslationImportError(f"Cue {cue_id} {source_code} source text changed.")
         translated = str(item[target_code]).strip()
         if not translated:
-            raise TranslationImportError(
-                f"Cue {cue_id} has an empty {target_code} translation."
-            )
+            raise TranslationImportError(f"Cue {cue_id} has an empty {target_code} translation.")
         source_urls = re.findall(r'https?://[^\s<>"]+', source.text)
         missing_urls = [url for url in source_urls if url not in translated]
         if missing_urls:

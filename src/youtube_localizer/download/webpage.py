@@ -170,14 +170,10 @@ class _PublicMediaHTMLParser(HTMLParser):
                     if isinstance(thumbnail, str):
                         self.thumbnail_url = thumbnail.strip()[:MAX_URL_CHARACTERS]
                     elif (
-                        isinstance(thumbnail, list)
-                        and thumbnail
-                        and isinstance(thumbnail[0], str)
+                        isinstance(thumbnail, list) and thumbnail and isinstance(thumbnail[0], str)
                     ):
                         self.thumbnail_url = thumbnail[0].strip()[:MAX_URL_CHARACTERS]
-            pending.extend(
-                child for child in current.values() if isinstance(child, (dict, list))
-            )
+            pending.extend(child for child in current.values() if isinstance(child, (dict, list)))
 
 
 def is_webpage_url(value: str) -> bool:
@@ -195,9 +191,7 @@ def is_webpage_url(value: str) -> bool:
 
 def webpage_media_id(value: str) -> str:
     if not is_webpage_url(value):
-        raise InputValidationError(
-            "网页地址必须是没有用户名或密码的公开 http(s) URL。"
-        )
+        raise InputValidationError("网页地址必须是没有用户名或密码的公开 http(s) URL。")
     if is_direct_media_candidate_url(value):
         # Extensionless addresses are ambiguous until their content type is probed. Keep the
         # same identifier that the direct-media path used so a later classification can resume.
@@ -218,14 +212,11 @@ def webpage_media_id(value: str) -> str:
 
 def _assert_public_http_url(value: str) -> None:
     if not is_webpage_url(value):
-        raise InputValidationError(
-            "网页和媒体地址必须是没有用户名或密码的公开 http(s) URL。"
-        )
+        raise InputValidationError("网页和媒体地址必须是没有用户名或密码的公开 http(s) URL。")
     hostname = urlparse(value).hostname or ""
     try:
         addresses = {
-            item[4][0]
-            for item in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+            item[4][0] for item in socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
         }
     except OSError as exc:
         raise InputValidationError(f"无法解析网页主机名：{hostname}") from exc

@@ -12,8 +12,12 @@ def test_release_version_is_consistent_across_package_metadata() -> None:
     expected = __version__
     files = {
         PROJECT_ROOT / "pyproject.toml": rf'^version = "{re.escape(expected)}"$',
-        PROJECT_ROOT / "installer" / "build_offline_installer.ps1": rf'\$Version = "{re.escape(expected)}"',
-        PROJECT_ROOT / "installer" / "offline-installer.iss": rf'#define AppVersion "{re.escape(expected)}"',
+        PROJECT_ROOT
+        / "installer"
+        / "build_offline_installer.ps1": rf'\$Version = "{re.escape(expected)}"',
+        PROJECT_ROOT
+        / "installer"
+        / "offline-installer.iss": rf'#define AppVersion "{re.escape(expected)}"',
     }
 
     for path, pattern in files.items():
@@ -25,9 +29,7 @@ def test_four_part_iterations_reuse_the_matching_three_part_model_packs() -> Non
     builder = (PROJECT_ROOT / "installer" / "build_offline_installer.ps1").read_text(
         encoding="utf-8"
     )
-    installer = (PROJECT_ROOT / "installer" / "offline-installer.iss").read_text(
-        encoding="utf-8"
-    )
+    installer = (PROJECT_ROOT / "installer" / "offline-installer.iss").read_text(encoding="utf-8")
 
     assert len(__version__.split(".")) == 4
     assert f'$ModelPackVersion = "{expected_model_version}"' in builder
@@ -47,9 +49,7 @@ def test_four_part_iterations_reuse_the_matching_three_part_model_packs() -> Non
 def test_current_release_is_presented_as_the_stable_standard_download() -> None:
     expected = __version__
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    checklist = (PROJECT_ROOT / "docs" / "RELEASE_CHECKLIST.md").read_text(
-        encoding="utf-8"
-    )
+    checklist = (PROJECT_ROOT / "docs" / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     assert f"v{expected} Standard 正式版" in readme
     assert f"YouTube-Chinese-Localizer-{expected}-Standard-Offline-Setup.exe" in readme

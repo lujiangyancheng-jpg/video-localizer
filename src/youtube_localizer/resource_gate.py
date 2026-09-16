@@ -25,9 +25,7 @@ class ResourceSchedule:
     detail: str
 
 
-def choose_resource_schedule(
-    resources: SystemResources, gpus: list[NvidiaGPU]
-) -> ResourceSchedule:
+def choose_resource_schedule(resources: SystemResources, gpus: list[NvidiaGPU]) -> ResourceSchedule:
     """Choose safe cross-process lanes from stable total hardware capacity.
 
     A compute job and NVENC render may overlap only on a machine with enough system and GPU
@@ -44,7 +42,9 @@ def choose_resource_schedule(
             "split",
             "high-headroom mode: AI compute and video encoding may overlap",
         )
-    reason = "less than 24 GiB system memory" if not enough_memory else "less than 10 GiB GPU memory"
+    reason = (
+        "less than 24 GiB system memory" if not enough_memory else "less than 10 GiB GPU memory"
+    )
     return ResourceSchedule("serialized", f"safe mode: {reason}")
 
 

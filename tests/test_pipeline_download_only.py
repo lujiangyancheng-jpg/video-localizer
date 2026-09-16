@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from youtube_localizer.config import AppConfig
 from youtube_localizer.download.direct import DirectMediaDownloadResult
 from youtube_localizer.download.youtube import YouTubeDownloadResult
@@ -91,6 +93,67 @@ def test_download_only_stops_after_high_quality_acquisition(tmp_path) -> None:
     transcribe.assert_not_called()
     translate.assert_not_called()
     render.assert_not_called()
+
+
+@pytest.mark.parametrize("enhancement_mode", ["off", "general"])
+def test_download_only_applies_selected_lower_resolution_and_fps(
+    tmp_path, enhancement_mode
+) -> None:
+    project = ProjectPaths(tmp_path / f"transform-{enhancement_mode}")
+    project.create()
+    url = "https://youtu.be/outputLimits"
+    metadata = SourceMetadata(
+        source_type="youtube",
+        source_input=url,
+        source_url=url,
+        video_id="outputLimits",
+        title="Output limits",
+        duration=2.0,
+        width=1920,
+        height=1080,
+        frame_rate=60,
+        audio_codec="aac",
+    )
+
+    def fake_download(*_args, **_kwargs):
+        video = project.source / "source_video.mp4"
+        video.write_bytes(b"source")
+        return YouTubeDownloadResult(video=video)
+
+    def fake_transform(_source, output, *_args, **_kwargs):
+        output.write_bytes(b"converted 720p 30fps")
+        return output
+
+    config = AppConfig.model_validate(
+        {
+            "subtitle_mode": "download_only",
+            "render": {"output_height": 720, "output_fps": 30},
+            "enhancement": {"mode": enhancement_mode},
+            "publishing": {"generate_metadata": False},
+        }
+    )
+    with (
+        patch(
+            "youtube_localizer.pipeline.prepare_project",
+            return_value=(project, metadata, {"id": metadata.video_id}),
+        ),
+        patch("youtube_localizer.pipeline.download_youtube", side_effect=fake_download),
+        patch(
+            "youtube_localizer.preflight.super_resolution_runtime",
+            return_value=(tmp_path / "upscaler.exe", tmp_path),
+        ),
+        patch(
+            "youtube_localizer.pipeline.render_video_transform", side_effect=fake_transform
+        ) as transform,
+        patch("youtube_localizer.pipeline.validate_rendered_video") as validate,
+    ):
+        result = process_pipeline(url, config)
+
+    transform.assert_called_once()
+    validate.assert_called_once_with(project.enhanced_source, expected_duration=2.0)
+    assert result.status == "downloaded"
+    assert project.enhanced_source in result.outputs
+    assert project.enhanced_source.read_bytes() == b"converted 720p 30fps"
 
 
 def test_webpage_media_refreshes_declared_url_before_a_resumed_acquisition(tmp_path) -> None:

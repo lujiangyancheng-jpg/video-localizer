@@ -174,7 +174,10 @@ def probe_h264_encoder(codec: str, ffmpeg: str | None = None) -> tuple[bool, str
         if codec == "h264_nvenc" and (
             "minimum required nvidia driver" in normalized or "nvenc api version" in normalized
         ):
-            return False, "当前 NVIDIA 驱动不能供此 FFmpeg 使用 NVENC；可自动改用兼容编码器或其他方案。"
+            return (
+                False,
+                "当前 NVIDIA 驱动不能供此 FFmpeg 使用 NVENC；可自动改用兼容编码器或其他方案。",
+            )
         if codec == "h264_nvenc" and "no nvenc capable devices" in normalized:
             return False, "FFmpeg 没有发现可用的 NVIDIA NVENC 编码器。"
         return False, f"{codec} 测试失败：{_last_detail_line(detail)}"
@@ -217,9 +220,7 @@ def select_h264_nvenc_encoder(ffmpeg: str | None = None) -> H264Encoder:
     return H264Encoder(None, "未找到可用的 FFmpeg。")
 
 
-def select_h264_encoder(
-    ffmpeg: str | None = None, *, preferred: str = "auto"
-) -> H264Encoder:
+def select_h264_encoder(ffmpeg: str | None = None, *, preferred: str = "auto") -> H264Encoder:
     """Choose a verified encoder across NVIDIA, Intel, AMD, and macOS hardware.
 
     `auto` intentionally probes instead of guessing from GPU brand. This supports mixed-GPU

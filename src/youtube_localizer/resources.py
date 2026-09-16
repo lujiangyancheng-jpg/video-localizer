@@ -156,14 +156,10 @@ def super_resolution_runtime() -> tuple[Path, Path] | None:
     if configured := os.getenv("VIDEO_LOCALIZER_UPSCALER_PATH"):
         candidates.append(Path(configured).expanduser())
     if home := os.getenv("YOUTUBE_LOCALIZER_HOME"):
-        candidates.append(
-            Path(home) / "runtime" / "super-resolution" / "waifu2x-ncnn-vulkan.exe"
-        )
+        candidates.append(Path(home) / "runtime" / "super-resolution" / "waifu2x-ncnn-vulkan.exe")
 
     source_root = Path(__file__).resolve().parents[2]
-    candidates.append(
-        source_root / "tools" / "super-resolution" / "waifu2x-ncnn-vulkan.exe"
-    )
+    candidates.append(source_root / "tools" / "super-resolution" / "waifu2x-ncnn-vulkan.exe")
     candidates.extend(
         parent / "runtime" / "super-resolution" / "waifu2x-ncnn-vulkan.exe"
         for parent in Path(sys.executable).resolve().parents[:4]
@@ -176,9 +172,10 @@ def super_resolution_runtime() -> tuple[Path, Path] | None:
             continue
         model_directory = candidate.parent
         if (
-            (model_directory / "models-upconv_7_photo" / "noise1_scale2.0x_model.param").is_file()
-            and (model_directory / "models-cunet" / "noise1_scale2.0x_model.param").is_file()
-        ):
+            model_directory / "models-upconv_7_photo" / "noise1_scale2.0x_model.param"
+        ).is_file() and (
+            model_directory / "models-cunet" / "noise1_scale2.0x_model.param"
+        ).is_file():
             return candidate.resolve(), model_directory.resolve()
     return None
 

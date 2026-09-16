@@ -14,6 +14,7 @@ from rich.table import Table
 from . import __version__
 from .config import TRANSLATION_DIRECTIONS, AppConfig, load_config
 from .doctor import run_doctor
+from .enhancement.super_resolution import render_enhancement_comparison
 from .errors import LocalizerError
 from .logging_config import configure_logging
 from .models import ProjectPaths
@@ -58,6 +59,7 @@ from .subtitles.quality import audit_subtitles
 from .support import create_support_bundle
 from .transcription.audio import extract_transcription_audio
 from .transcription.whisper_engine import transcribe_audio
+from .translation.glossary import load_glossary
 from .translation.manual import import_translation_file
 from .utils.files import atomic_write_json, ensure_within
 from .utils.hashing import hash_file, stable_hash
@@ -96,6 +98,7 @@ def _run_batch_item(input_value: str, config: AppConfig, resume: bool) -> BatchO
         status=result.status,
         project_path=str(result.project.root),
     )
+
 
 ConfigOption = Annotated[
     Path | None,
@@ -159,7 +162,9 @@ def _configured(
         if not 12 <= subtitle_font_size <= 120:
             raise LocalizerError("--subtitle-font-size must be between 12 and 120.")
         subtitle_changes["font_size"] = subtitle_font_size
-        subtitle_changes["english_font_size"] = max(10, min(100, round(subtitle_font_size * 34 / 48)))
+        subtitle_changes["english_font_size"] = max(
+            10, min(100, round(subtitle_font_size * 34 / 48))
+        )
     for value, option, key in (
         (subtitle_position_x, "--subtitle-position-x", "position_x_percent"),
         (subtitle_position_y, "--subtitle-position-y", "position_y_percent"),
@@ -185,9 +190,7 @@ def _configured(
     if super_resolution is not None:
         if super_resolution not in {"off", "general", "animation"}:
             raise LocalizerError("--super-resolution must be off, general, or animation.")
-        changes["enhancement"] = config.enhancement.model_copy(
-            update={"mode": super_resolution}
-        )
+        changes["enhancement"] = config.enhancement.model_copy(update={"mode": super_resolution})
     rights_changes: dict[str, str | bool] = {}
     if rights_basis is not None:
         valid_rights = {
@@ -228,9 +231,7 @@ def _configured(
     if translation_direction:
         if translation_direction not in TRANSLATION_DIRECTIONS:
             raise LocalizerError(
-                "--translation-direction must be one of: "
-                + ", ".join(TRANSLATION_DIRECTIONS)
-                + "."
+                "--translation-direction must be one of: " + ", ".join(TRANSLATION_DIRECTIONS) + "."
             )
         translation_changes["direction"] = translation_direction
     if translation_changes:
@@ -248,7 +249,9 @@ def _configured(
 def preflight_command(
     input_value: Annotated[
         str,
-        typer.Argument(help="Public YouTube/HTML5 media-page URL, direct media URL, or local video path."),
+        typer.Argument(
+            help="Public YouTube/HTML5 media-page URL, direct media URL, or local video path."
+        ),
     ],
     config_path: ConfigOption = None,
     output_dir: Annotated[
@@ -291,7 +294,9 @@ def preflight_command(
 def process_command(
     input_value: Annotated[
         str,
-        typer.Argument(help="Public YouTube/HTML5 media-page URL, direct media URL, or local video path."),
+        typer.Argument(
+            help="Public YouTube/HTML5 media-page URL, direct media URL, or local video path."
+        ),
     ],
     config_path: ConfigOption = None,
     output_dir: Annotated[
@@ -322,9 +327,7 @@ def process_command(
         str | None,
         typer.Option(
             "--subtitle-font",
-            help=(
-                "ASS font family. The packaged application includes Noto Sans CJK SC."
-            ),
+            help=("ASS font family. The packaged application includes Noto Sans CJK SC."),
         ),
     ] = None,
     subtitle_font_size: Annotated[
@@ -333,7 +336,9 @@ def process_command(
     ] = None,
     subtitle_position_x: Annotated[
         int | None,
-        typer.Option("--subtitle-position-x", help="Subtitle horizontal position as a 2-98 percent."),
+        typer.Option(
+            "--subtitle-position-x", help="Subtitle horizontal position as a 2-98 percent."
+        ),
     ] = None,
     subtitle_position_y: Annotated[
         int | None,
@@ -461,9 +466,7 @@ def process_command(
             "ChatGPT Plus does not include OpenAI API credits; this manual workflow uses no API key."
         )
     else:
-        console.print(
-            f"[bold green]Completed:[/] {rendered_output(result.project, config)}"
-        )
+        console.print(f"[bold green]Completed:[/] {rendered_output(result.project, config)}")
 
 
 @app.command("batch")
@@ -574,9 +577,7 @@ def transcribe_command(
     with state.step(
         subtitle_step,
         input_hash=hash_file(source),
-        config_hash=stable_hash(
-            {"transcription": config.transcription, "language": source_code}
-        ),
+        config_hash=stable_hash({"transcription": config.transcription, "language": source_code}),
     ) as outputs:
         extract_transcription_audio(source, audio)
         cleanup = transcribe_audio(
@@ -743,9 +744,7 @@ def render_command(
     softsub_warning = ""
     source = find_source_video(project)
     subtitle = (
-        _target_ass(project, config)
-        if config.subtitle_mode == "chinese"
-        else project.bilingual_ass
+        _target_ass(project, config) if config.subtitle_mode == "chinese" else project.bilingual_ass
     )
     with state.step(
         "render",
@@ -773,11 +772,19 @@ def render_command(
                 )
     _, target_code = _language_pair(config)
     target_cues = parse_subtitle(_target_subtitle(project, config))
+    source_path = _source_subtitle(project, config)
+    source_quality_cues = parse_subtitle(source_path) if source_path.is_file() else []
+    glossary_path = Path(config.translation.glossary_file)
+    if not glossary_path.is_absolute():
+        candidates = [project.root / glossary_path, Path.cwd() / glossary_path]
+        glossary_path = next((path for path in candidates if path.is_file()), candidates[0])
     quality = audit_subtitles(
         target_cues,
         language=target_code,
         max_lines=config.subtitles.max_lines,
         preferred_line_length=config.subtitles.max_chinese_chars_per_line,
+        source_cues=source_quality_cues,
+        glossary=load_glossary(glossary_path),
     )
     atomic_write_json(project.logs / "subtitle_quality.json", quality)
     if softsub_warning:
@@ -827,9 +834,7 @@ def preview_command(
     config = load_config(config_path) if config_path else load_project_config(project)
     metadata = load_project_metadata(project)
     subtitle = (
-        _target_ass(project, config)
-        if config.subtitle_mode == "chinese"
-        else project.bilingual_ass
+        _target_ass(project, config) if config.subtitle_mode == "chinese" else project.bilingual_ass
     )
     if not subtitle.is_file():
         raise LocalizerError("Styled subtitles are not ready. Import/translate subtitles first.")
@@ -844,6 +849,40 @@ def preview_command(
         duration=duration,
     )
     console.print(f"[green]Preview created:[/] {output}")
+
+
+@app.command("enhancement-preview")
+def enhancement_preview_command(
+    project_path: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    start: Annotated[float, typer.Option("--start", min=0)] = 0,
+    duration: Annotated[float, typer.Option("--duration", min=1, max=30)] = 10,
+    config_path: ConfigOption = None,
+) -> None:
+    """Create a short left-original/right-AI comparison before a full enhancement run."""
+    project = _project(project_path)
+    config = load_config(config_path) if config_path else load_project_config(project)
+    metadata = load_project_metadata(project)
+    if not metadata.width or not metadata.height or not metadata.frame_rate:
+        raise LocalizerError("Video dimensions and frame rate are required for AI preview.")
+    output = project.rendered / f"enhancement_comparison_{start:g}_{duration:g}.mp4"
+    result = render_enhancement_comparison(
+        find_source_video(project),
+        output,
+        source_width=metadata.width,
+        source_height=metadata.height,
+        frame_rate=metadata.frame_rate,
+        source_duration=metadata.duration,
+        source_audio_codec=metadata.audio_codec,
+        render=config.render,
+        enhancement=config.enhancement,
+        start_seconds=start,
+        duration_seconds=duration,
+    )
+    console.print(
+        f"[green]Comparison created:[/] {result.output}\n"
+        f"Left: original · Right: AI enhanced · Preview took {result.elapsed_seconds:.1f}s · "
+        f"Estimated full-video enhancement: {result.estimated_full_seconds / 60:.1f} min"
+    )
 
 
 @app.command("metadata")
@@ -981,6 +1020,7 @@ KNOWN_COMMANDS = {
     "translate-import",
     "render",
     "preview",
+    "enhancement-preview",
     "metadata",
     "validate",
     "clean",

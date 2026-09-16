@@ -109,9 +109,7 @@ def setup_readiness_items(
     output_advice: str,
 ) -> tuple[SetupReadinessItem, ...]:
     """Build the small, user-facing status list shown in the persistent help center."""
-    package_name = {"standard": "Standard", "complete": "Complete"}.get(
-        package or "", "源码"
-    )
+    package_name = {"standard": "Standard", "complete": "Complete"}.get(package or "", "源码")
     whisper_detail = (
         f"Whisper {' / '.join(item.title() for item in whisper_models)} 已安装，可离线识别字幕。"
         if whisper_models

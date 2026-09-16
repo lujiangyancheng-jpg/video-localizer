@@ -78,9 +78,7 @@ def save_reviewed_subtitles(
         raise LocalizerError("原语言字幕缺失，无法重建双语字幕。")
     source_cues = parse_subtitle(source_path)
     english, chinese = (source_cues, cues) if source_code == "en" else (cues, source_cues)
-    english, chinese = align_bilingual_tracks(
-        english, chinese, reference_language=target_code
-    )
+    english, chinese = align_bilingual_tracks(english, chinese, reference_language=target_code)
     bilingual = combine_bilingual(english, chinese, mode=config.subtitle_mode)
     write_srt(session.project.bilingual_srt, bilingual)
     write_bilingual_ass(

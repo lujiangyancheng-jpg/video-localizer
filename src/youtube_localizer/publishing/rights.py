@@ -39,9 +39,7 @@ def validate_rights(config: RightsConfig, *, strict: bool = True) -> list[str]:
             issues.append("书面授权需要填写权利人。")
         if not config.permission_reference.strip():
             issues.append("书面授权需要填写可核对的授权证明或日期。")
-    if config.basis in {"cc_by", "cc_by_sa", "cc_by_nc"} and not _is_http_url(
-        config.license_url
-    ):
+    if config.basis in {"cc_by", "cc_by_sa", "cc_by_nc"} and not _is_http_url(config.license_url):
         issues.append("Creative Commons 素材需要填写公开许可页面链接。")
     if config.basis == "public_domain" and not _is_http_url(config.license_url):
         issues.append("公共领域素材需要填写可核对的来源或权利状态链接。")

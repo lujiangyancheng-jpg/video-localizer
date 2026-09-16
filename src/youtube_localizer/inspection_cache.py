@@ -59,9 +59,7 @@ def save_cached_inspection(
     payload = metadata.model_dump(mode="json")
     payload["source_input"] = ""
     payload["source_url"] = None
-    path = inspection_cache_path(
-        source, environment=environment, cache_directory=cache_directory
-    )
+    path = inspection_cache_path(source, environment=environment, cache_directory=cache_directory)
     atomic_write_json(
         path,
         {
@@ -86,9 +84,7 @@ def load_cached_inspection(
 ) -> SourceMetadata | None:
     """Return a fresh cached inspection, or ``None`` when it is stale or invalid."""
     normalized = _normalized_source(source)
-    path = inspection_cache_path(
-        source, environment=environment, cache_directory=cache_directory
-    )
+    path = inspection_cache_path(source, environment=environment, cache_directory=cache_directory)
     try:
         data = load_json(path)
     except (OSError, TypeError, ValueError):
@@ -123,9 +119,7 @@ def load_cached_inspection(
         source_value = str(Path(source).expanduser().resolve())
     else:
         source_value = source.strip()
-    return metadata.model_copy(
-        update={"source_input": source_value, "source_url": source_value}
-    )
+    return metadata.model_copy(update={"source_input": source_value, "source_url": source_value})
 
 
 def cached_raw_metadata(metadata: SourceMetadata) -> dict[str, Any]:

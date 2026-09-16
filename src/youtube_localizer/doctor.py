@@ -147,8 +147,7 @@ def run_doctor(
         )
     )
     offline_runtime = all(
-        importlib.util.find_spec(module) is not None
-        for module in ("ctranslate2", "sentencepiece")
+        importlib.util.find_spec(module) is not None for module in ("ctranslate2", "sentencepiece")
     )
     checks.append(
         DoctorCheck(
@@ -163,13 +162,10 @@ def run_doctor(
         )
     )
     default_offline_model = (
-        offline_model_directory
-        or Path("~/.youtube-chinese-localizer/models/translate-en_zh-1_9")
+        offline_model_directory or Path("~/.youtube-chinese-localizer/models/translate-en_zh-1_9")
     ).expanduser()
     if validate_offline_model(default_offline_model) is None:
-        default_offline_model = (
-            find_bundled_model("translate-en_zh-1_9") or default_offline_model
-        )
+        default_offline_model = find_bundled_model("translate-en_zh-1_9") or default_offline_model
     model_ready = validate_offline_model(default_offline_model) is not None
     checks.append(
         DoctorCheck(
@@ -187,14 +183,10 @@ def run_doctor(
         offline_zh_en_model_directory
         or Path("~/.youtube-chinese-localizer/models/translate-zh_en-1_9")
     ).expanduser()
-    if (
-        validate_offline_model(zh_en_model, source_code="zh", target_code="en")
-        is None
-    ):
+    if validate_offline_model(zh_en_model, source_code="zh", target_code="en") is None:
         zh_en_model = find_bundled_model("translate-zh_en-1_9") or zh_en_model
     zh_en_model_ready = (
-        validate_offline_model(zh_en_model, source_code="zh", target_code="en")
-        is not None
+        validate_offline_model(zh_en_model, source_code="zh", target_code="en") is not None
     )
     checks.append(
         DoctorCheck(
@@ -229,7 +221,9 @@ def run_doctor(
     installed_whispers = installed_whisper_models()
     for whisper_name in ("medium", "small"):
         whisper_model, whisper_is_local = resolve_whisper_model(whisper_name)
-        package_model_missing = installed_tier is not None and whisper_name not in installed_whispers
+        package_model_missing = (
+            installed_tier is not None and whisper_name not in installed_whispers
+        )
         checks.append(
             DoctorCheck(
                 f"Whisper {whisper_name} model",
@@ -309,8 +303,7 @@ def run_doctor(
     storage_advice = output_directory_advice(output_directory)
     storage_status = (
         "warning"
-        if is_onedrive_directory(output_directory)
-        or storage_advice.startswith("可用空间仅")
+        if is_onedrive_directory(output_directory) or storage_advice.startswith("可用空间仅")
         else "ok"
     )
     checks.append(DoctorCheck("Output performance", storage_status, storage_advice, False))

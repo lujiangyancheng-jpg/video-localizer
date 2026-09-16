@@ -3,7 +3,7 @@ from __future__ import annotations
 from youtube_localizer.config import AppConfig
 from youtube_localizer.hardware import NvidiaGPU, SystemResources
 from youtube_localizer.models import SourceMetadata
-from youtube_localizer.preflight import build_job_preflight
+from youtube_localizer.preflight import build_job_preflight, estimate_working_bytes
 
 
 def _metadata(tmp_path) -> SourceMetadata:
@@ -62,7 +62,9 @@ def test_low_available_vram_switches_auto_medium_to_small(tmp_path, monkeypatch)
             "faster-whisper-medium": medium,
         }.get(name),
     )
-    monkeypatch.setattr(preflight, "detect_system_resources", lambda: SystemResources(16, 32 * 1024))
+    monkeypatch.setattr(
+        preflight, "detect_system_resources", lambda: SystemResources(16, 32 * 1024)
+    )
     monkeypatch.setattr(
         preflight,
         "query_nvidia_gpus",
@@ -81,8 +83,12 @@ def test_source_checkout_keeps_a_user_selected_local_ai_provider(tmp_path, monke
     small = tmp_path / "models" / "faster-whisper-small"
     small.mkdir(parents=True)
     monkeypatch.delenv("YOUTUBE_LOCALIZER_PACKAGE_TIER", raising=False)
-    monkeypatch.setattr(preflight, "find_bundled_model", lambda name: {"faster-whisper-small": small}.get(name))
-    monkeypatch.setattr(preflight, "detect_system_resources", lambda: SystemResources(16, 32 * 1024))
+    monkeypatch.setattr(
+        preflight, "find_bundled_model", lambda name: {"faster-whisper-small": small}.get(name)
+    )
+    monkeypatch.setattr(
+        preflight, "detect_system_resources", lambda: SystemResources(16, 32 * 1024)
+    )
     monkeypatch.setattr(preflight, "query_nvidia_gpus", lambda: [])
 
     plan = build_job_preflight(
@@ -138,3 +144,21 @@ def test_preflight_blocks_selected_super_resolution_without_optional_pack(
 
     assert not plan.ready
     assert any("enhancement pack" in blocker for blocker in plan.blockers)
+
+
+def test_enhancement_disk_estimate_reflects_model_intermediate_resolution(tmp_path) -> None:
+    metadata = _metadata(tmp_path).model_copy(
+        update={"width": 1920, "height": 1080, "frame_rate": 60, "duration": 600}
+    )
+    two_x = AppConfig.model_validate(
+        {
+            "subtitle_mode": "download_only",
+            "render": {"output_height": 2160},
+            "enhancement": {"mode": "general"},
+        }
+    )
+    four_x = two_x.model_copy(
+        update={"render": two_x.render.model_copy(update={"output_height": 4320})}
+    )
+
+    assert estimate_working_bytes(metadata, four_x) > estimate_working_bytes(metadata, two_x)

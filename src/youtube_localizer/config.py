@@ -82,9 +82,7 @@ def default_output_directory() -> Path:
     return home / "Videos" / "YouTube Chinese Localizer"
 
 
-def is_onedrive_directory(
-    directory: Path, *, environment: Mapping[str, str] | None = None
-) -> bool:
+def is_onedrive_directory(directory: Path, *, environment: Mapping[str, str] | None = None) -> bool:
     """Return whether *directory* is located below a configured OneDrive root."""
     environment = os.environ if environment is None else environment
     candidate = directory.expanduser().resolve()
@@ -148,9 +146,24 @@ class TranscriptionConfig(StrictModel):
 
 class TranslationConfig(StrictModel):
     direction: Literal[
-        "en-to-zh", "zh-to-en", "en-to-ja", "en-to-ko", "en-to-es", "en-to-fr",
-        "en-to-de", "en-to-pt", "en-to-ru", "en-to-ar", "zh-to-ja", "zh-to-ko",
-        "zh-to-es", "zh-to-fr", "zh-to-de", "zh-to-pt", "zh-to-ru", "zh-to-ar",
+        "en-to-zh",
+        "zh-to-en",
+        "en-to-ja",
+        "en-to-ko",
+        "en-to-es",
+        "en-to-fr",
+        "en-to-de",
+        "en-to-pt",
+        "en-to-ru",
+        "en-to-ar",
+        "zh-to-ja",
+        "zh-to-ko",
+        "zh-to-es",
+        "zh-to-fr",
+        "zh-to-de",
+        "zh-to-pt",
+        "zh-to-ru",
+        "zh-to-ar",
     ] = "en-to-zh"
     provider: Literal["manual", "offline", "ollama", "openai-compatible"] = "manual"
     model: str = ""
@@ -158,18 +171,12 @@ class TranslationConfig(StrictModel):
     batch_size: int = Field(default=40, ge=1, le=200)
     preserve_timestamps: bool = True
     glossary_file: str = "glossary.yaml"
-    offline_model_directory: Path = Path(
-        "~/.youtube-chinese-localizer/models/translate-en_zh-1_9"
-    )
-    offline_model_url: str = (
-        "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel"
-    )
+    offline_model_directory: Path = Path("~/.youtube-chinese-localizer/models/translate-en_zh-1_9")
+    offline_model_url: str = "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel"
     offline_zh_en_model_directory: Path = Path(
         "~/.youtube-chinese-localizer/models/translate-zh_en-1_9"
     )
-    offline_zh_en_model_url: str = (
-        "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel"
-    )
+    offline_zh_en_model_url: str = "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel"
     offline_device: Literal["auto", "cpu", "cuda"] = "auto"
     offline_compute_type: str = "auto"
     offline_auto_download: bool = True
@@ -218,8 +225,9 @@ class RenderConfig(StrictModel):
     faststart: bool = True
     copy_audio_when_possible: bool = True
     soft_subtitles: bool = True
-    # None means keep the original dimensions/frame rate. These settings only affect the
-    # hard-subtitled MP4; direct-download mode always retains the original source stream.
+    # None means keep the original dimensions/frame rate. Direct-download mode applies lower
+    # requested limits with one ordinary conversion; it never enlarges pixels unless optional
+    # AI super resolution is enabled.
     output_height: int | None = Field(default=None, ge=144, le=4320)
     output_fps: int | None = Field(default=None, ge=1, le=240)
 
@@ -279,9 +287,9 @@ class PublishingConfig(StrictModel):
 class AppConfig(StrictModel):
     output_directory: Path = Field(default_factory=default_output_directory)
     subtitle_language: str = "zh-CN"
-    subtitle_mode: Literal[
-        "download_only", "chinese", "bilingual_en_zh", "bilingual_zh_en"
-    ] = "chinese"
+    subtitle_mode: Literal["download_only", "chinese", "bilingual_en_zh", "bilingual_zh_en"] = (
+        "chinese"
+    )
     download: DownloadConfig = DownloadConfig()
     transcription: TranscriptionConfig = TranscriptionConfig()
     translation: TranslationConfig = TranslationConfig()
@@ -293,10 +301,10 @@ class AppConfig(StrictModel):
 
     @model_validator(mode="after")
     def restrict_bilingual_layout_to_chinese_and_english(self) -> AppConfig:
-        if (
-            self.subtitle_mode in {"bilingual_en_zh", "bilingual_zh_en"}
-            and requires_local_ai_or_api(self.translation.direction)
-        ):
+        if self.subtitle_mode in {
+            "bilingual_en_zh",
+            "bilingual_zh_en",
+        } and requires_local_ai_or_api(self.translation.direction):
             raise ValueError(
                 "Bilingual layouts are available only for Chinese-English translation. "
                 "Choose target-language subtitles for other languages."

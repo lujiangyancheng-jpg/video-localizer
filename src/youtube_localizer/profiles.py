@@ -40,9 +40,7 @@ def apply_processing_profile(config: AppConfig, profile: ProcessingProfile) -> A
         transcription = config.transcription.model_copy(
             update={"model": "medium", "device": "auto", "compute_type": "auto", "beam_size": 5}
         )
-        render = config.render.model_copy(
-            update={"codec": "auto", "crf": 17, "preset": "medium"}
-        )
+        render = config.render.model_copy(update={"codec": "auto", "crf": 17, "preset": "medium"})
     elif profile == "safe_cpu":
         transcription = config.transcription.model_copy(
             update={"model": "small", "device": "cpu", "compute_type": "int8", "beam_size": 1}
@@ -51,26 +49,16 @@ def apply_processing_profile(config: AppConfig, profile: ProcessingProfile) -> A
             update={"codec": "libx264", "crf": 22, "preset": "veryfast"}
         )
     elif profile == "fast":
-        transcription = config.transcription.model_copy(
-            update={"model": "small", "beam_size": 1}
-        )
-        render = config.render.model_copy(
-            update={"codec": "auto", "crf": 23, "preset": "medium"}
-        )
+        transcription = config.transcription.model_copy(update={"model": "small", "beam_size": 1})
+        render = config.render.model_copy(update={"codec": "auto", "crf": 23, "preset": "medium"})
     elif profile == "quality":
         transcription = config.transcription.model_copy(
             update={"model": "medium", "beam_size": 8, "vad_filter": True, "word_timestamps": True}
         )
-        render = config.render.model_copy(
-            update={"codec": "auto", "crf": 17, "preset": "medium"}
-        )
+        render = config.render.model_copy(update={"codec": "auto", "crf": 17, "preset": "medium"})
     else:  # balanced
-        transcription = config.transcription.model_copy(
-            update={"model": "medium", "beam_size": 5}
-        )
-        render = config.render.model_copy(
-            update={"codec": "auto", "crf": 19, "preset": "medium"}
-        )
+        transcription = config.transcription.model_copy(update={"model": "medium", "beam_size": 5})
+        render = config.render.model_copy(update={"codec": "auto", "crf": 19, "preset": "medium"})
 
     return config.model_copy(update={"transcription": transcription, "render": render})
 
@@ -79,8 +67,7 @@ def apply_output_quality(config: AppConfig, quality: OutputQuality) -> AppConfig
     """Set the final encode quality without changing source download or acceleration behavior."""
     if quality not in OUTPUT_QUALITIES:
         raise ConfigurationError(
-            "Unknown output quality: "
-            f"{quality}. Expected one of: {', '.join(OUTPUT_QUALITIES)}."
+            f"Unknown output quality: {quality}. Expected one of: {', '.join(OUTPUT_QUALITIES)}."
         )
 
     crf_by_quality = {"best": 17, "high": 19, "standard": 23}

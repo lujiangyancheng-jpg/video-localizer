@@ -149,8 +149,7 @@ class LocalOllamaProvider(TranslationProvider):
             return
         if not self.auto_pull:
             raise LocalizerError(
-                f"Local Ollama model {self.model!r} is not installed. Run: "
-                f"ollama pull {self.model}"
+                f"Local Ollama model {self.model!r} is not installed. Run: ollama pull {self.model}"
             )
         LOGGER.info(
             "Downloading local AI model %s for first use; this may take several minutes…",
@@ -197,8 +196,7 @@ class LocalOllamaProvider(TranslationProvider):
             "or speaker name, use the correct context name. "
             "The video title and channel are context only: never translate, repeat, or prepend "
             "them. Translate only the text between the subtitle paragraph markers. Return only "
-            "the complete paragraph translation in the supplied JSON field."
-            + glossary
+            "the complete paragraph translation in the supplied JSON field." + glossary
         )
         separator = "" if self.source_code == "zh" else " "
         paragraph = separator.join(cue.text.strip() for cue in cues)
@@ -304,9 +302,7 @@ class LocalOllamaProvider(TranslationProvider):
         }
         key = self.cache.key(payload)
         cached = self.cache.get(key)
-        translation = (
-            str(cached.get("translation", "")).strip() if isinstance(cached, dict) else ""
-        )
+        translation = str(cached.get("translation", "")).strip() if isinstance(cached, dict) else ""
         if translation:
             try:
                 self._validate_translation(translation, cues)
@@ -333,4 +329,6 @@ class LocalOllamaProvider(TranslationProvider):
         )
         if parts is None:
             raise LocalizerError("Could not project the local AI paragraph onto cue timings.")
-        return [cue.model_copy(update={"text": text}) for cue, text in zip(cues, parts, strict=True)]
+        return [
+            cue.model_copy(update={"text": text}) for cue, text in zip(cues, parts, strict=True)
+        ]
