@@ -13,7 +13,7 @@
 [![Windows quality gate](https://github.com/lujiangyancheng-jpg/video-localizer/actions/workflows/ci.yml/badge.svg)](https://github.com/lujiangyancheng-jpg/video-localizer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/lujiangyancheng-jpg/video-localizer)](LICENSE)
 
-[**下载 v0.7.0.15 Standard 正式版**](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.15/YouTube-Chinese-Localizer-0.7.0.15-Standard-Offline-Setup.exe)
+[**下载 v0.7.0.16 Standard 正式版**](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.16/YouTube-Chinese-Localizer-0.7.0.16-Standard-Offline-Setup.exe)
 · [使用说明](docs/USER_GUIDE.zh-CN.md)
 · [参加测试](docs/TESTING_GUIDE.zh-CN.md)
 · [讨论与求助](https://github.com/lujiangyancheng-jpg/video-localizer/discussions)
@@ -29,6 +29,7 @@
 | 输入 | 本地处理 | 输出 |
 | --- | --- | --- |
 | YouTube 公开视频 | 最高质量下载、Whisper 识别、翻译、字幕质检 | 无字幕原片、SRT、ASS、硬字幕或软字幕 MP4 |
+| Bilibili / 抖音视频 | 分享链接识别、B站分P选择、可选本机账号会话 | 下载后直接接续中文转英文等本地化方案 |
 | 获得授权的公开播放页或媒体直链 | 自动解析；动态页面可在隔离 Edge 窗口中捕获播放器公开媒体 URL | 可恢复的本地项目与最终成片 |
 | 本地视频 | 不上传视频；自动选择 NVIDIA、Intel、AMD 或 CPU 安全方案 | 保持原始画质/帧率，或可选本地 AI 超分辨率 |
 
@@ -39,7 +40,7 @@
 
 ## 三步开始
 
-1. 下载单文件 [Standard Setup.exe](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.15/YouTube-Chinese-Localizer-0.7.0.15-Standard-Offline-Setup.exe)。
+1. 下载单文件 [Standard Setup.exe](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.16/YouTube-Chinese-Localizer-0.7.0.16-Standard-Offline-Setup.exe)。
 2. 安装时按需选择 Whisper Small、Whisper Medium、Local AI 和 AI 超分辨率。全新安装默认勾选 Whisper Small；只下载勾选的组件，已有组件升级时不会重复下载。
 3. 打开 **Localize Studio**，粘贴一个或多个链接，确认预分析信息后点击“开始本地化”。
 
@@ -50,7 +51,7 @@
 | 更自然的中英字幕 | Standard + Whisper + Local AI | 不需要 |
 | 日、韩、西、法、德、葡、俄、阿字幕 | Whisper + Local AI，或兼容 API | 两种方案任选 |
 
-**Standard v0.7.0.15 正式版基础包约 289 MiB**，内含程序、Python、精简 FFmpeg、字幕字体、硬件编码支持和两套中英快速翻译模型。Whisper、Local AI 与 AI 超分辨率是可选包；超分组件不塞进基础包。前三段版本相同的程序共用模型，例如 `0.7.0.15` 继续使用 `0.7.0` 组件包。
+**Standard v0.7.0.16 正式版基础包约 289 MiB**，内含程序、Python、精简 FFmpeg、字幕字体、硬件编码支持和两套中英快速翻译模型。Whisper、Local AI 与 AI 超分辨率是可选包；超分组件不塞进基础包。前三段版本相同的程序共用模型，例如 `0.7.0.16` 继续使用 `0.7.0` 组件包。
 
 当前 Windows 安装包尚未使用商业代码签名证书，因此浏览器或 SmartScreen 可能显示来源提示。请只从本仓库的 GitHub Release 下载，并核对 Release 同页提供的 SHA-256。
 
@@ -79,7 +80,9 @@
 
 ## 当前状态
 
-`0.7.0.15` 让无字幕直下正确执行所选分辨率／帧率，增加 10 秒左右超分对比与整片耗时估算、逐段磁盘保护、组件管理，以及日／韩／阿拉伯语、数字和术语一致性质检。项目仍处于积极开发期；新安装默认使用稳定更新通道，希望提前验证新功能的测试者可在应用内切换“开发”通道。已知限制、可复现命令和开发细节见下文。
+`0.7.0.16` 增加 B站／抖音视频入口、本机加密平台会话、分P选择和独立下载组件更新；超分对比可在整片处理前运行并随时停止，只生成烧录字幕时合并超分与字幕编码。字幕审核支持只重译当前段落并保留备份，组件管理支持后台检查与校验后补装。项目仍处于积极开发期；新安装默认使用稳定更新通道。平台支持受上游接口、账号权限和限流影响；本次已验证适配逻辑与会话隔离，未代替用户登录平台账号，不能保证每条平台视频均可下载。
+
+“视频平台”菜单集中提供账号登录、B站分P列表、当前可用画质和下载引擎更新。登录通过独立 Edge 窗口在官方网站完成；仅保存对应平台的会话，并使用 Windows DPAPI 加密。若会话过期可刷新或清除；无需把账号密码输入本软件。通用“浏览器抓取”仍是独立的公开媒体 URL 捕获功能。
 
 ---
 

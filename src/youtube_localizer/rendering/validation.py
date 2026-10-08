@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -37,13 +38,28 @@ def validate_rendered_video(
     ffprobe: str = "ffprobe",
     ffmpeg: str = "ffmpeg",
     decode: bool = True,
+    require_audio: bool = True,
+    expected_height: int | None = None,
+    expected_frame_rate: float | None = None,
 ) -> dict[str, Any]:
     data = probe_output(path, ffprobe=ffprobe)
     streams = data.get("streams", [])
-    if not any(stream.get("codec_type") == "video" for stream in streams):
+    video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+    if video is None:
         raise LocalizerError("Rendered file has no video stream.")
-    if not any(stream.get("codec_type") == "audio" for stream in streams):
+    if require_audio and not any(stream.get("codec_type") == "audio" for stream in streams):
         raise LocalizerError("Rendered file has no audio stream.")
+    if expected_height is not None and abs(int(video.get("height") or 0) - expected_height) > 2:
+        raise LocalizerError(f"Rendered height does not match the requested {expected_height}p.")
+    if expected_frame_rate is not None:
+        try:
+            rate = float(Fraction(video.get("avg_frame_rate") or video.get("r_frame_rate") or "0"))
+        except (ValueError, ZeroDivisionError):
+            rate = 0
+        if abs(rate - expected_frame_rate) > max(0.15, expected_frame_rate * 0.01):
+            raise LocalizerError(
+                f"Rendered frame rate {rate:g} does not match {expected_frame_rate:g} FPS."
+            )
     duration = float(data.get("format", {}).get("duration") or 0)
     tolerance = max(2.0, expected_duration * 0.02)
     if expected_duration > 0 and abs(duration - expected_duration) > tolerance:
@@ -58,12 +74,13 @@ def validate_rendered_video(
                 ffmpeg,
                 "-v",
                 "error",
+                "-xerror",
                 "-i",
                 path,
                 "-map",
                 "0:v:0",
                 "-map",
-                "0:a:0",
+                "0:a?",
                 "-f",
                 "null",
                 null_target,

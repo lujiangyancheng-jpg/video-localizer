@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "youtube-chinese-localizer"
-version = "0.7.0.15"
+version = "0.7.0.16"
 description = "A private, resumable desktop workflow for downloading and localizing authorized videos."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,6 +12,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "Video Localizer contributors" }]
 dependencies = [
   "httpx>=0.27,<1",
+  "packaging>=24,<28",
   "filelock>=3.16,<4",
   "pydantic>=2.8,<3",
   "python-dotenv>=1.0.1,<2",

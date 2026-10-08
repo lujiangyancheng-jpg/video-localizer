@@ -16,6 +16,13 @@ from .download.direct import (
 )
 from .download.local import import_local, inspect_local
 from .download.metadata import metadata_from_probe, probe_media
+from .download.platforms import (
+    download_platform,
+    inspect_platform,
+    normalize_share_input,
+    platform_for_url,
+    platform_source_id,
+)
 from .download.webpage import inspect_webpage_media, is_webpage_url, webpage_media_id
 from .download.youtube import (
     download_youtube,
@@ -146,6 +153,8 @@ def load_project_config(project: ProjectPaths) -> AppConfig:
 
 
 def _source_identifier(value: str) -> str:
+    if platform_for_url(value):
+        return platform_source_id(value)
     video_id = youtube_video_id(value)
     if video_id:
         return video_id
@@ -174,6 +183,9 @@ def _find_existing_project(output_root: Path, identifier: str) -> Path | None:
 
 
 def _inspect_input(value: str) -> tuple[SourceMetadata, dict[str, Any] | None]:
+    value = normalize_share_input(value)
+    if platform_for_url(value):
+        return inspect_platform(value)
     if cached := load_cached_inspection(value):
         LOGGER.info("Reusing fresh desktop media inspection cache.")
         return cached, None if cached.source_type == "local" else cached_raw_metadata(cached)
@@ -206,6 +218,7 @@ def prepare_project(
 ) -> tuple[ProjectPaths, SourceMetadata, dict[str, Any] | None]:
     if resume and overwrite:
         raise InputValidationError("--resume and --overwrite cannot be used together.")
+    value = normalize_share_input(value)
     output_root = config.output_directory.expanduser().resolve()
     identifier = _source_identifier(value)
     existing = _find_existing_project(output_root, identifier)
@@ -225,6 +238,11 @@ def prepare_project(
     name = f"{sanitize_filename(metadata.title, max_length=80)}_{metadata.video_id}"
     root = output_root / name
     if root.exists():
+        if resume:
+            project = ProjectPaths(root)
+            project.create()
+            save_project_config(project, config)
+            return project, load_project_metadata(project), raw_info
         if overwrite:
             remove_project(root, output_root)
         else:
@@ -321,7 +339,13 @@ def enhancement_config_hash(config: AppConfig, target_height: int) -> str:
 
 def render_source(project: ProjectPaths, config: AppConfig) -> Path:
     source = find_source_video(project)
+    if config.subtitle_mode == "download_only" and project.enhanced_source.is_file() and PipelineState(project.state_file).can_skip(
+        "enhance", input_hash=hash_file(source), config_hash=stable_hash({"pipeline_version": 1, "transform": config.render}), output_files=[project.enhanced_source]
+    ):
+        return project.enhanced_source
     if config.enhancement.mode == "off":
+        return source
+    if config.subtitle_mode != "download_only" and not config.render.soft_subtitles:
         return source
     metadata = load_project_metadata(project)
     target = super_resolution_target_height(metadata.height or 0, config.render, config.enhancement)
@@ -695,16 +719,54 @@ def render_project(project: ProjectPaths, config: AppConfig) -> Path:
                 video_size=_video_size(metadata),
             )
     output = rendered_output(project, config)
-    render_hardsub(
-        source,
-        subtitle,
-        output,
-        config.render,
-        source_audio_codec=metadata.audio_codec,
-        expected_duration=metadata.duration,
-        source_frame_rate=metadata.frame_rate,
+    target_height = super_resolution_target_height(
+        metadata.height or 0, config.render, config.enhancement
     )
-    validate_rendered_video(output, expected_duration=metadata.duration)
+    fused = (
+        config.enhancement.mode != "off"
+        and not config.render.soft_subtitles
+        and target_height > (metadata.height or 0)
+    )
+    if fused:
+        LOGGER.info("Rendering subtitles with AI enhancement in one encoding pass.")
+        enhance_video(
+            source,
+            output,
+            source_width=metadata.width or 0,
+            source_height=metadata.height or 0,
+            frame_rate=metadata.frame_rate or 0,
+            duration=metadata.duration,
+            source_audio_codec=metadata.audio_codec,
+            render=config.render,
+            enhancement=config.enhancement,
+            working_directory=project.temp / "super_resolution_hardsub",
+            subtitle_file=subtitle,
+        )
+    else:
+        render_hardsub(
+            source,
+            subtitle,
+            output,
+            config.render,
+            source_audio_codec=metadata.audio_codec,
+            expected_duration=metadata.duration,
+            source_frame_rate=metadata.frame_rate,
+        )
+    validate_rendered_video(
+        output,
+        expected_duration=metadata.duration,
+        require_audio=bool(metadata.audio_streams) or metadata.audio_codec not in {"", "none"},
+        expected_height=target_height
+        if (fused or source == project.enhanced_source)
+        else min(
+            metadata.height or config.render.output_height or 0,
+            config.render.output_height or metadata.height or 0,
+        )
+        or None,
+        expected_frame_rate=min(metadata.frame_rate, config.render.output_fps)
+        if metadata.frame_rate and config.render.output_fps
+        else None,
+    )
     return output
 
 
@@ -728,7 +790,11 @@ def render_softsub_project(project: ProjectPaths, config: AppConfig) -> Path:
         output,
         language=FFMPEG_LANGUAGE_CODES[target_code],
     )
-    validate_rendered_video(output, expected_duration=metadata.duration)
+    validate_rendered_video(
+        output,
+        expected_duration=metadata.duration,
+        require_audio=bool(metadata.audio_streams) or metadata.audio_codec not in {"", "none"},
+    )
     return output
 
 
@@ -845,6 +911,8 @@ def process_pipeline(
                             refreshed, raw_info = inspect_direct_media(metadata.source_input)
                         elif metadata.source_type == "webpage_media":
                             refreshed, raw_info = inspect_webpage_media(metadata.source_input)
+                        elif metadata.source_type in {"bilibili", "douyin"}:
+                            refreshed, raw_info = inspect_platform(metadata.source_input)
                         else:  # pragma: no cover - protects saved project metadata from corruption
                             raise LocalizerError(
                                 f"Unsupported remote source type: {metadata.source_type}"
@@ -856,6 +924,16 @@ def process_pipeline(
                             raw_info,
                             project.source,
                             config.download,
+                        )
+                    elif metadata.source_type in {"bilibili", "douyin"}:
+                        from .download.youtube import YouTubeDownloadResult
+
+                        download = YouTubeDownloadResult(
+                            download_platform(
+                                metadata.source_url or metadata.source_input,
+                                project.source,
+                                config.download,
+                            )
                         )
                     else:
                         download = download_direct_media(
@@ -902,7 +980,11 @@ def process_pipeline(
                     subtitle_source = metadata.subtitle_kind
                     if config.download.download_metadata:
                         raw_path = project.source / "metadata.raw.json"
-                        raw_to_save = raw_info
+                        raw_to_save = (
+                            cached_raw_metadata(metadata)
+                            if metadata.source_type in {"bilibili", "douyin"}
+                            else raw_info
+                        )
                         if metadata.source_type == "webpage_media":
                             raw_to_save = {
                                 **cached_raw_metadata(metadata),
@@ -934,7 +1016,9 @@ def process_pipeline(
             )
 
         processing_video = source_video
-        if config.enhancement.mode != "off":
+        if config.enhancement.mode != "off" and (
+            config.subtitle_mode == "download_only" or config.render.soft_subtitles
+        ):
             if not metadata.width or not metadata.height or not metadata.frame_rate:
                 raise LocalizerError(
                     "AI super resolution needs source width, height, and frame-rate metadata."
@@ -985,6 +1069,12 @@ def process_pipeline(
                         validate_rendered_video(
                             project.enhanced_source,
                             expected_duration=metadata.duration,
+                            require_audio=bool(metadata.audio_streams)
+                            or metadata.audio_codec not in {"", "none"},
+                            expected_height=target_height,
+                            expected_frame_rate=min(metadata.frame_rate, config.render.output_fps)
+                            if config.render.output_fps
+                            else None,
                         )
                 # The step context fingerprints the validated output before checkpoints are
                 # discarded. A failed validation therefore retains every resumable segment.
@@ -1032,6 +1122,16 @@ def process_pipeline(
                         validate_rendered_video(
                             project.enhanced_source,
                             expected_duration=metadata.duration,
+                            require_audio=bool(metadata.audio_streams)
+                            or metadata.audio_codec not in {"", "none"},
+                            expected_height=min(
+                                metadata.height or 0,
+                                config.render.output_height or metadata.height or 0,
+                            )
+                            or None,
+                            expected_frame_rate=min(metadata.frame_rate, config.render.output_fps)
+                            if metadata.frame_rate and config.render.output_fps
+                            else None,
                         )
                 processing_video = project.enhanced_source
                 outputs.append(processing_video)
@@ -1252,7 +1352,8 @@ def process_pipeline(
                     translated_outputs, translation_warnings = translate_with_api(
                         project, config, metadata
                     )
-                step_outputs.extend(translated_outputs)
+                outputs.extend(translated_outputs)
+                step_outputs.append(target_subtitle)
                 remember_warnings(translation_warnings)
 
         if target_code in {"en", "zh"}:
@@ -1295,6 +1396,13 @@ def process_pipeline(
             preferred_line_length=config.subtitles.max_chinese_chars_per_line,
             source_cues=source_quality_cues,
             glossary=load_glossary(glossary_path),
+            source_groups=(
+                _group_local_ai_paragraphs(source_quality_cues, source_code=source_code)
+                if config.translation.provider == "ollama"
+                else group_paragraph_cues(source_quality_cues, source_code=source_code)
+                if config.translation.provider == "offline"
+                else None
+            ),
         )
         flagged_cues.extend(quality["flagged_cue_ids"])
         quality_path = project.logs / "subtitle_quality.json"
@@ -1322,7 +1430,9 @@ def process_pipeline(
                 ),
             }
         )
-        render_config_hash = stable_hash(config.render)
+        render_config_hash = stable_hash(
+            {"render": config.render, "enhancement": config.enhancement, "pipeline_version": 3}
+        )
         rendered = rendered_output(project, config)
         remember_warnings(rendering_media_warnings(metadata))
         render_outputs = [rendered]
@@ -1348,8 +1458,9 @@ def process_pipeline(
                             ]
                         )
         softsub = softsub_output(project, config)
-        if softsub.is_file():
+        if config.render.soft_subtitles and softsub.is_file():
             render_outputs.append(softsub)
+        cleanup_enhancement_checkpoints(project.temp / "super_resolution_hardsub")
         outputs.extend(render_outputs)
         state.mark_status("completed")
         report = build_report(

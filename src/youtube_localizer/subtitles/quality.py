@@ -56,6 +56,7 @@ def audit_subtitles(
     preferred_line_length: int,
     source_cues: list[SubtitleCue] | None = None,
     glossary: dict[str, str] | None = None,
+    source_groups: list[list[SubtitleCue]] | None = None,
 ) -> dict[str, object]:
     """Return deterministic, review-oriented subtitle checks for the final target track.
 
@@ -65,7 +66,6 @@ def audit_subtitles(
     findings: list[SubtitleQualityFinding] = []
     previous_visible = ""
     language = language.lower().split("-", maxsplit=1)[0]
-    source_by_id = {cue.id: cue for cue in source_cues or []}
     glossary = glossary or {}
     for cue in cues:
         visible = _visible_text(cue.text)
@@ -137,28 +137,41 @@ def audit_subtitles(
             )
         previous_visible = normalized
 
-        source = source_by_id.get(cue.id)
-        if source is not None:
-            source_numbers = _numbers(source.text)
-            target_numbers = _numbers(visible)
-            if source_numbers != target_numbers:
+    groups = (
+        source_groups if source_groups is not None else [[source] for source in source_cues or []]
+    )
+    for group in groups:
+        if not group:
+            continue
+        start, end = group[0].start_ms, group[-1].end_ms
+        targets = [cue for cue in cues if start <= (cue.start_ms + cue.end_ms) / 2 < end]
+        if not targets:
+            targets = [cue for cue in cues if cue.start_ms < end and cue.end_ms > start]
+        if not targets:
+            continue
+        source_text = " ".join(cue.text for cue in group)
+        target_text = " ".join(_visible_text(cue.text) for cue in targets)
+        source_numbers, target_numbers = _numbers(source_text), _numbers(target_text)
+        if Counter(source_numbers) != Counter(target_numbers):
+            for cue in targets:
                 findings.append(
                     SubtitleQualityFinding(
                         cue.id,
                         "number_consistency",
-                        f"Numbers differ from source: {source_numbers} -> {target_numbers}.",
+                        f"Paragraph numbers differ from source: {source_numbers} -> {target_numbers}.",
                     )
                 )
-            for source_term, target_term in glossary.items():
-                if (
-                    source_term.casefold() in source.text.casefold()
-                    and target_term.casefold() not in visible.casefold()
-                ):
+        for source_term, target_term in glossary.items():
+            if (
+                source_term.casefold() in source_text.casefold()
+                and target_term.casefold() not in target_text.casefold()
+            ):
+                for cue in targets:
                     findings.append(
                         SubtitleQualityFinding(
                             cue.id,
                             "term_consistency",
-                            f"Expected glossary translation {source_term!r} -> {target_term!r}.",
+                            f"Expected paragraph glossary translation {source_term!r} -> {target_term!r}.",
                         )
                     )
 

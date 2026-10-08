@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import queue
 import re
@@ -9,6 +10,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import uuid
 import webbrowser
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -16,6 +18,7 @@ from contextlib import suppress
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 
+from .components import install_component
 from .config import (
     AppConfig,
     RightsConfig,
@@ -37,13 +40,15 @@ from .download.browser_capture import (
     validate_browser_capture_page,
 )
 from .download.direct import assess_direct_media_url, is_direct_media_candidate_url
+from .download.platforms import normalize_share_input
 from .download.webpage import is_webpage_url
 from .download.youtube import is_youtube_url
-from .enhancement.super_resolution import render_enhancement_comparison
+from .downloader_updates import rollback_downloader_update, update_downloader
+from .enhancement.super_resolution import EnhancementPreviewResult
 from .errors import LocalizerError
 from .hardware import SystemResources, detect_system_resources
 from .inspection_cache import save_cached_inspection
-from .installation import component_inventory, installation_root
+from .installation import component_inventory, installation_root, verify_optional_components
 from .media_preview import MediaPreview, inspect_media_preview, media_preview_summary
 from .models import ProjectPaths
 from .onboarding import (
@@ -54,6 +59,7 @@ from .onboarding import (
     setup_status_message,
     user_guide_url,
 )
+from .platform_dialogs import PlatformAccountsDialog, PlatformVideosDialog
 from .publishing.rights import RIGHTS_BASIS_LABELS, validate_rights
 from .resource_gate import detected_resource_schedule
 from .resources import (
@@ -72,6 +78,7 @@ from .review import (
 from .state import find_recoverable_projects
 from .support import create_support_bundle
 from .updates import ReleaseCheck, check_for_update
+from .utils.subprocesses import hidden_console_kwargs
 from .utils.text import ms_to_srt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -221,7 +228,7 @@ _PROJECT_WORKSPACE_PREFIX = "Project workspace: "
 
 def queue_input_values(value: str) -> list[str]:
     """Return one input per non-empty line while retaining local paths with spaces."""
-    values = [line.strip() for line in value.splitlines() if line.strip()]
+    values = [normalize_share_input(line) for line in value.splitlines() if line.strip()]
     if not values and value.strip():
         values = [value.strip()]
     return list(dict.fromkeys(values))
@@ -373,6 +380,7 @@ def progress_update_from_output(
     *,
     provider: str,
     enhancement: bool = False,
+    fused_enhancement: bool = False,
 ) -> tuple[float, str] | None:
     """Map the pipeline's real progress messages to a single GUI progress percentage."""
     if "Preflight ready:" in line:
@@ -399,8 +407,10 @@ def progress_update_from_output(
             details = f" · {speed.group(1)} 帧/秒 · 预计剩余 {speed.group(2)} 秒"
         if "restored checkpoint" in line:
             details = " · 已恢复完成片段"
-        span = 88.0 if provider == "download_only" else 12.0
-        return 10.0 + span * percent / 100, f"AI 超分辨率：{percent:.1f}%{details}"
+        span = 23.0 if fused_enhancement else (88.0 if provider == "download_only" else 12.0)
+        start = 76.0 if fused_enhancement else 10.0
+        label = "AI 超分与字幕压制" if fused_enhancement else "AI 超分辨率"
+        return start + span * percent / 100, f"{label}：{percent:.1f}%{details}"
 
     if "Processing audio with duration" in line:
         return 24.0, "正在识别原语言语音…"
@@ -560,6 +570,7 @@ def build_process_command(
     output_quality: str | None = None,
     output_fps: int | None = None,
     output_height: int | None = None,
+    soft_subtitles: bool | None = None,
     super_resolution: str = "off",
     rights_basis: str = "unspecified",
     rights_holder: str = "",
@@ -666,6 +677,8 @@ def build_process_command(
     command.append("--commercial-use" if commercial_use else "--noncommercial-use")
     if resume:
         command.append("--resume")
+    if soft_subtitles is not None:
+        command.append("--soft-subtitles" if soft_subtitles else "--no-soft-subtitles")
     return command
 
 
@@ -1221,15 +1234,31 @@ class ComponentManagerDialog:
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, stretch=key == "detail")
         self.tree.pack(fill="both", expand=True)
+        self.component_events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self.component_busy = False
+        self.component_cancel = threading.Event()
+        self.window.bind(
+            "<Destroy>",
+            lambda event: self.component_cancel.set() if event.widget == self.window else None,
+            add="+",
+        )
+        self.component_status = tk.StringVar(value="正在后台扫描组件…")
+        ttk.Label(
+            body, textvariable=self.component_status, style="Muted.TLabel", wraplength=690
+        ).pack(anchor="w", pady=(8, 0))
+        self.window.protocol("WM_DELETE_WINDOW", self._close)
         self._refresh()
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.pack(fill="x", pady=(16, 0))
         ttk.Button(
             actions,
-            text="下载 / 修复组件",
+            text="安装 / 修复所选",
             style="Primary.TButton",
-            command=lambda: webbrowser.open(model_release_page_url()),
+            command=self._install_selected,
         ).pack(side="left")
+        ttk.Button(
+            actions, text="完整性检查", style="Secondary.TButton", command=self._verify_selected
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(
             actions,
             text="Windows 卸载管理",
@@ -1246,8 +1275,9 @@ class ComponentManagerDialog:
             actions,
             text="关闭",
             style="Secondary.TButton",
-            command=self.window.destroy,
+            command=self._close,
         ).pack(side="right")
+        self.window.after(150, self._poll_components)
 
     @staticmethod
     def _size_text(size: int) -> str:
@@ -1256,15 +1286,27 @@ class ComponentManagerDialog:
         return f"{size / 1024**3:.2f} GiB" if size >= 1024**3 else f"{size / 1024**2:.1f} MiB"
 
     def _refresh(self) -> None:
+        if self.component_busy:
+            return
+        self.component_busy = True
+
+        def worker() -> None:
+            try:
+                self.component_events.put(("inventory", component_inventory()))
+            except Exception as exc:
+                self.component_events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_inventory(self, inventory: object) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
-        inventory = component_inventory()
         if not inventory:
             self.tree.insert(
                 "", "end", values=("开发环境", "未打包", "—", "请通过项目依赖管理组件")
             )
             return
-        for component in inventory:
+        for component in inventory:  # type: ignore[union-attr]
             status = (
                 "需修复"
                 if component.repair_needed
@@ -1275,6 +1317,7 @@ class ComponentManagerDialog:
             self.tree.insert(
                 "",
                 "end",
+                iid=component.key,
                 values=(
                     component.name,
                     status,
@@ -1282,6 +1325,81 @@ class ComponentManagerDialog:
                     component.detail,
                 ),
             )
+
+    def _verify_selected(self) -> None:
+        selection = self.tree.selection()
+        root = installation_root()
+        if self.component_busy or not selection or root is None:
+            return
+        self.component_busy = True
+        key = selection[0]
+        self.component_status.set("正在后台检查模型完整性，大模型可能需要一些时间…")
+
+        def worker() -> None:
+            try:
+                verified = verify_optional_components(root, selected=key)
+                self.component_events.put(
+                    (
+                        "done",
+                        "完整性检查通过：" + ", ".join(verified) if verified else "该组件未安装。",
+                    )
+                )
+            except Exception as exc:
+                self.component_events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _install_selected(self) -> None:
+        selection = self.tree.selection()
+        root = installation_root()
+        if self.component_busy or not selection or root is None:
+            return
+        self.component_busy = True
+        self.component_cancel.clear()
+        self.component_status.set("正在获取兼容组件及校验信息…")
+        key = selection[0]
+
+        def worker() -> None:
+            try:
+                install_component(
+                    key,
+                    root,
+                    progress=lambda text: self.component_events.put(("progress", text)),
+                    cancel=self.component_cancel,
+                )
+                verify_optional_components(root, selected=key)
+                self.component_events.put(
+                    ("done", "组件安装并检查完成；请重新打开处理设置后使用。")
+                )
+            except Exception as exc:
+                self.component_events.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=False).start()
+
+    def _poll_components(self) -> None:
+        if not self.window.winfo_exists():
+            return
+        try:
+            while True:
+                event, payload = self.component_events.get_nowait()
+                if event == "progress":
+                    self.component_status.set(str(payload))
+                elif event == "inventory":
+                    self.component_busy = False
+                    self._show_inventory(payload)
+                    self.component_status.set("选择组件后可补装、修复或检查完整性。")
+                else:
+                    self.component_busy = False
+                    self.component_status.set(str(payload))
+                    if event == "done":
+                        self._refresh()
+        except queue.Empty:
+            pass
+        self.window.after(150, self._poll_components)
+
+    def _close(self) -> None:
+        self.component_cancel.set()
+        self.window.destroy()
 
     def _open_windows_apps(self) -> None:
         if os.name == "nt":
@@ -1491,6 +1609,10 @@ class SubtitleReviewDialog:
         self.session = session
         self.config = config
         self.on_preview = on_preview
+        self.retranslation_events: queue.Queue[tuple[object, str | None]] = queue.Queue()
+        self.retranslating = False
+        self.retranslation_cancel = threading.Event()
+        self.retranslation_process: subprocess.Popen[str] | None = None
         self.cues = list(session.cues)
         self.selected_index: int | None = None
         self.dirty = False
@@ -1577,10 +1699,15 @@ class SubtitleReviewDialog:
             footer, text="从此处预览 12 秒", style="Secondary.TButton", command=self._preview
         )
         self.preview_button.pack(side="right")
+        self.retranslate_button = ttk.Button(
+            footer, text="重译当前段落", style="Secondary.TButton", command=self._retranslate
+        )
+        self.retranslate_button.pack(side="right", padx=(0, 8))
         ttk.Button(footer, text="保存修改", style="Primary.TButton", command=self._save).pack(
             side="right", padx=(0, 8)
         )
         self._populate()
+        self.window.after(150, self._poll_retranslation)
 
     def _populate(self) -> None:
         for item in self.tree.get_children():
@@ -1621,6 +1748,8 @@ class SubtitleReviewDialog:
         self.editor.insert("1.0", cue.text)
 
     def _select_cue(self, _event: object) -> None:
+        if self.retranslating:
+            return
         selection = self.tree.selection()
         if not selection:
             return
@@ -1634,6 +1763,8 @@ class SubtitleReviewDialog:
         self._load_selected(next_index)
 
     def _save(self, *, quiet: bool = False) -> bool:
+        if self.retranslating:
+            return False
         if not self._commit_editor():
             return False
         styled_subtitle = (
@@ -1673,6 +1804,101 @@ class SubtitleReviewDialog:
         self.status.set("正在压制所选位置附近的 12 秒预览…")
         self.on_preview(self.session, self.config, start, self._preview_finished)
 
+    def _retranslate(self) -> None:
+        tracker = getattr(self.window.master, "_localizer_window", None)
+        if tracker is not None and (
+            tracker._has_active_processes() or (tracker.worker and tracker.worker.is_alive())
+        ):
+            messagebox.showinfo("任务进行中", "请先结束当前任务，再重译段落。", parent=self.window)
+            return
+        if self.retranslating or self.selected_index is None or not self._save(quiet=True):
+            return
+        cue_id = self.cues[self.selected_index].id
+        self.retranslating = True
+        self.retranslation_cancel.clear()
+        self.retranslate_button.configure(state="disabled")
+        self.preview_button.configure(state="disabled")
+        self.editor.configure(state="disabled")
+        self.status.set("正在重译对应原文段落；其他段落和修改会保留…")
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / "main.py"),
+            "retranslate",
+            str(self.session.project.root),
+            "--cue-id",
+            str(cue_id),
+        ]
+        # Parent window tracks this worker alongside preview/queue processes so closing the app
+        # terminates the full process tree. The API key is inherited only through environment.
+        environment = os.environ.copy()
+        if tracker is not None and tracker.api_key.get().strip():
+            environment["OPENAI_COMPATIBLE_API_KEY"] = tracker.api_key.get().strip()
+        if tracker is not None:
+            tracker.stop_requested = False
+            tracker._review_retranslation_running = True
+
+        def worker() -> None:
+            process = None
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=environment,
+                    **hidden_console_kwargs(),
+                )
+                self.retranslation_process = process
+                if self.retranslation_cancel.is_set():
+                    terminate_process_tree(process)
+                if tracker is not None:
+                    with tracker._process_lock:
+                        tracker._active_processes.add(process)
+                    if tracker.stop_requested:
+                        terminate_process_tree(process)
+                output, _ = process.communicate()
+                if process.returncode != 0:
+                    raise LocalizerError(output[-1800:] or "段落重译未完成。")
+                session = load_subtitle_review_session(self.session.project, self.config)
+                self.retranslation_events.put((session, None))
+            except (OSError, ValueError, LocalizerError) as exc:
+                self.retranslation_events.put((None, str(exc)))
+            finally:
+                if tracker is not None:
+                    with tracker._process_lock:
+                        if process is not None:
+                            tracker._active_processes.discard(process)
+                    tracker._review_retranslation_running = False
+                self.retranslation_process = None
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _poll_retranslation(self) -> None:
+        if not self.window.winfo_exists():
+            return
+        try:
+            session, error = self.retranslation_events.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self.retranslating = False
+            self.editor.configure(state="normal")
+            self.retranslate_button.configure(state="normal")
+            self.preview_button.configure(state="normal")
+            if error:
+                self.status.set("重译未完成，原字幕保持可用。")
+                messagebox.showerror("段落重译", error, parent=self.window)
+            else:
+                self.session = session  # type: ignore[assignment]
+                self.cues = list(self.session.cues)
+                self.selected_index = None
+                self.dirty = False
+                self._populate()
+                self.status.set("段落已重译，之前的字幕已备份；完成审核后可继续生成成片。")
+        self.window.after(150, self._poll_retranslation)
+
     def _preview_finished(self, output: Path | None, error: str | None) -> None:
         if not self.window.winfo_exists():
             return
@@ -1686,6 +1912,9 @@ class SubtitleReviewDialog:
         messagebox.showinfo("预览已生成", f"短预览已保存到：\n{output}", parent=self.window)
 
     def _close(self) -> None:
+        self.retranslation_cancel.set()
+        if self.retranslating and self.retranslation_process is not None:
+            terminate_process_tree(self.retranslation_process)
         if self.dirty and not messagebox.askyesno(
             "未保存的字幕修改", "有尚未保存的字幕修改，确定关闭吗？", parent=self.window
         ):
@@ -1830,6 +2059,12 @@ class LocalizerWindow:
         self.worker: threading.Thread | None = None
         self._analysis_worker: threading.Thread | None = None
         self._enhancement_preview_running = False
+        self._review_retranslation_running = False
+        self._platform_account_dialogs: list[PlatformAccountsDialog] = []
+        self._fused_enhancement_tasks: set[int | None] = set()
+        self.root._localizer_window = self
+        self._preview_cancel = threading.Event()
+        self._preview_process: subprocess.Popen[str] | None = None
         self._analysis_generation = 0
         self._analysis_after_id: str | None = None
         self._queue_save_after_id: str | None = None
@@ -1920,6 +2155,7 @@ class LocalizerWindow:
             )
         )
         self.output_directory = tk.StringVar(value=saved_settings.output_directory)
+        self.soft_subtitles = tk.BooleanVar(value=saved_settings.soft_subtitles)
         self.endpoint = tk.StringVar(value=endpoint or "https://api.openai.com/v1")
         self.model = tk.StringVar(value=model)
         self.api_key = tk.StringVar(value=api_key)
@@ -2294,6 +2530,16 @@ class LocalizerWindow:
             command=self._choose_local_file,
         )
         self.local_file_button.grid(row=0, column=3)
+        platform_menu = ttk.Menubutton(sourcebar, text="视频平台", style="Source.TButton")
+        menu = tk.Menu(platform_menu, tearoff=False)
+        menu.add_command(label="平台账号（B站 / 抖音）", command=self._open_platform_accounts)
+        menu.add_command(label="选择平台视频 / B站分P", command=self._open_platform_videos)
+        menu.add_command(label="查看所选视频可用画质", command=self._show_media_formats)
+        menu.add_separator()
+        menu.add_command(label="更新网站下载组件", command=self._update_download_engine)
+        menu.add_command(label="恢复内置下载组件", command=self._rollback_download_engine)
+        platform_menu.configure(menu=menu)
+        platform_menu.grid(row=0, column=4, padx=(8, 0))
         update_tools = tk.Frame(secondary_tools, background=HEADER)
         update_tools.pack(side="right", padx=(10, 0))
         self.update_channel_combo = ttk.Combobox(
@@ -2639,7 +2885,10 @@ class LocalizerWindow:
             "<<ComboboxSelected>>", lambda _event: self._update_output_settings()
         )
         ttk.Label(options, textvariable=self.output_hint, style="Muted.TLabel").grid(
-            row=6, column=0, columnspan=4, sticky="w", pady=(7, 0)
+            row=6, column=0, columnspan=3, sticky="w", pady=(7, 0)
+        )
+        ttk.Checkbutton(options, text="同时生成可开关字幕版", variable=self.soft_subtitles).grid(
+            row=6, column=3, sticky="e", pady=(7, 0)
         )
         ttk.Label(options, text="项目输出文件夹", style="Field.TLabel").grid(
             row=7, column=0, sticky="w", pady=(14, 5), padx=(0, 6)
@@ -3096,11 +3345,12 @@ class LocalizerWindow:
         has_project = index is not None and index in self._project_paths_by_queue_index
         self.open_task_button.configure(state="normal" if has_project else "disabled")
         self.enhancement_preview_button.configure(
+            text="停止对比" if self._enhancement_preview_running else "超分对比",
             state=(
                 "normal"
-                if has_project and not processing and not self._enhancement_preview_running
+                if self._enhancement_preview_running or (index is not None and not processing)
                 else "disabled"
-            )
+            ),
         )
         self.pause_selected_button.configure(
             state=(
@@ -3149,50 +3399,105 @@ class LocalizerWindow:
         self._open_local_path(project)
 
     def _preview_selected_enhancement(self) -> None:
-        from .pipeline import find_source_video, load_project_config, load_project_metadata
-
+        if self._enhancement_preview_running:
+            self._preview_cancel.set()
+            with self._process_lock:
+                process = self._preview_process
+            if process is not None:
+                terminate_process_tree(process)
+            self._set_status("正在停止超分对比…", "active")
+            return
+        if self._has_active_processes() or (self.worker and self.worker.is_alive()):
+            return
         index = self._selected_task_index()
         root = self._project_paths_by_queue_index.get(index or -1)
-        if root is None or self._enhancement_preview_running:
+        if index is None:
             return
-        project = ProjectPaths(root)
-        try:
-            config = load_project_config(project)
-            metadata = load_project_metadata(project)
-            source = find_source_video(project)
-            if config.enhancement.mode == "off":
-                raise LocalizerError("该项目没有启用 AI 画质增强，请先选择通用实拍或动画模式。")
-            if not metadata.width or not metadata.height or not metadata.frame_rate:
-                raise LocalizerError("项目缺少视频分辨率或帧率，无法生成超分对比。")
-        except (OSError, ValueError, LocalizerError) as exc:
-            messagebox.showerror("无法生成超分对比", str(exc), parent=self.root)
+        mode = SUPER_RESOLUTION_MODES[self.enhancement_label.get()]
+        if mode == "off":
+            messagebox.showinfo(
+                "超分对比", "请先在处理设置选择通用实拍或动画增强。", parent=self.root
+            )
             return
-        duration = min(10.0, max(1.0, metadata.duration))
-        start = max(0.0, min(metadata.duration - duration, metadata.duration / 3))
-        output = project.rendered / f"enhancement_comparison_{start:g}_{duration:g}.mp4"
+        if message := super_resolution_installation_message(mode):
+            messagebox.showinfo("超分组件", message, parent=self.root)
+            return
+        source = str(root) if root is not None else self._task_sources[index - 1]
+        preview = self._media_previews.get(index)
+        duration = preview.duration_seconds if preview else 0
+        start = max(0, min(duration / 3, duration - 10))
+        output = (
+            Path(self.output_directory.get()).expanduser()
+            / "previews"
+            / f"comparison-{uuid.uuid4().hex[:12]}.mp4"
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            sys.executable,
+            str(PROJECT_ROOT / "main.py"),
+            "source-preview",
+            source,
+            "--output",
+            str(output),
+            "--super-resolution",
+            mode,
+            "--start",
+            str(start),
+        ]
+        if height := OUTPUT_HEIGHTS[self.output_height_label.get()]:
+            command += ["--output-height", str(height)]
+        if fps := OUTPUT_FRAME_RATES[self.output_fps_label.get()]:
+            command += ["--output-fps", str(fps)]
+        self._preview_cancel.clear()
         self._enhancement_preview_running = True
         self._update_task_action_states()
         self._set_status("正在生成 10 秒超分对比，左侧原画、右侧 AI 增强…", "active")
 
         def worker() -> None:
+            process = None
             try:
-                result = render_enhancement_comparison(
-                    source,
-                    output,
-                    source_width=metadata.width,
-                    source_height=metadata.height,
-                    frame_rate=metadata.frame_rate,
-                    source_duration=metadata.duration,
-                    source_audio_codec=metadata.audio_codec,
-                    render=config.render,
-                    enhancement=config.enhancement,
-                    start_seconds=start,
-                    duration_seconds=duration,
+                if self._preview_cancel.is_set():
+                    self.events.put(("enhancement_preview", (None, "cancelled")))
+                    return
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    **hidden_console_kwargs(),
+                )
+                with self._process_lock:
+                    self._preview_process = process
+                    self._active_processes.add(process)
+                if self._preview_cancel.is_set():
+                    terminate_process_tree(process)
+                assert process.stdout is not None
+                lines = []
+                for line in process.stdout:
+                    lines.append(line)
+                    lines = lines[-40:]
+                    self.events.put(("preview_line", line))
+                code = process.wait()
+                if self._preview_cancel.is_set():
+                    self.events.put(("enhancement_preview", (None, "cancelled")))
+                    return
+                if code != 0:
+                    raise LocalizerError("".join(lines)[-1800:] or "预览未完成。")
+                data = json.loads(output.with_suffix(".json").read_text(encoding="utf-8"))
+                result = EnhancementPreviewResult(
+                    output, data["elapsed_seconds"], data["estimated_full_seconds"]
                 )
             except (OSError, ValueError, LocalizerError) as exc:
                 self.events.put(("enhancement_preview", (None, str(exc))))
             else:
                 self.events.put(("enhancement_preview", (result, None)))
+            finally:
+                with self._process_lock:
+                    if process is not None:
+                        self._active_processes.discard(process)
+                    self._preview_process = None
 
         threading.Thread(
             target=worker,
@@ -3383,6 +3688,9 @@ class LocalizerWindow:
         self._update_translation_fields()
 
     def _open_subtitle_review(self) -> None:
+        if self._has_active_processes() or (self.worker and self.worker.is_alive()):
+            messagebox.showinfo("任务进行中", "请先结束当前任务，再审核字幕。", parent=self.root)
+            return
         from tkinter import filedialog
 
         from .pipeline import load_project_config
@@ -3484,7 +3792,11 @@ class LocalizerWindow:
 
     def _has_active_processes(self) -> bool:
         with self._process_lock:
-            return any(process.poll() is None for process in self._active_processes)
+            return (
+                self._review_retranslation_running
+                or self._enhancement_preview_running
+                or any(process.poll() is None for process in self._active_processes)
+            )
 
     def _clear_input(self) -> None:
         if self._has_active_processes() or (self.worker and self.worker.is_alive()):
@@ -3541,6 +3853,67 @@ class LocalizerWindow:
         )
         if path:
             self.input_value.set(path)
+
+    def _open_platform_accounts(self) -> None:
+        self._platform_account_dialogs = [
+            dialog for dialog in self._platform_account_dialogs if dialog.window.winfo_exists()
+        ]
+        if self._platform_account_dialogs:
+            self._platform_account_dialogs[0].window.lift()
+            return
+        self._platform_account_dialogs.append(PlatformAccountsDialog(self.root))
+
+    def _open_platform_videos(self) -> None:
+        if self._has_active_processes() or (self.worker and self.worker.is_alive()):
+            return
+
+        initial = self.input_value.get()
+
+        def add(sources: list[str]) -> None:
+            # Replace the analyzed seed, rather than also downloading its default first part.
+            existing = queue_input_values(self.input_value.get())
+            seed = queue_input_values(dialog.value.get())
+            remaining = [source for source in existing if source not in seed]
+            self.input_value.set("\n".join(dict.fromkeys([*remaining, *sources])))
+
+        dialog = PlatformVideosDialog(self.root, initial, add)
+
+    def _update_download_engine(self) -> None:
+        if self._has_active_processes() or (self.worker and self.worker.is_alive()):
+            return
+        self._set_status("正在下载并验证官方 yt-dlp 组件…", "active")
+
+        def worker() -> None:
+            try:
+                self.events.put(("download_engine", (update_downloader(), None)))
+            except Exception as exc:
+                self.events.put(("download_engine", (None, str(exc))))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_media_formats(self) -> None:
+        index = self._selected_task_index()
+        preview = self._media_previews.get(index if index is not None else -1)
+        if preview is None:
+            messagebox.showinfo(
+                "可用画质", "请先选择队列视频，并等待媒体分析完成。", parent=self.root
+            )
+            return
+        formats = "\n".join(preview.available_formats[:30]) or media_preview_summary(preview)
+        messagebox.showinfo(
+            "当前会话可用画质",
+            preview.title
+            + "\n\n"
+            + formats
+            + "\n\n默认下载最佳源画质；可以在处理设置选择输出分辨率和帧率。",
+            parent=self.root,
+        )
+
+    def _rollback_download_engine(self) -> None:
+        rollback_downloader_update()
+        messagebox.showinfo(
+            "下载组件", "已恢复内置下载组件；重新启动软件后生效。", parent=self.root
+        )
 
     def _choose_output_directory(self) -> None:
         from tkinter import filedialog
@@ -3765,6 +4138,19 @@ class LocalizerWindow:
         values = queue_input_values(self.input_value.get())
         if not values:
             raise ValueError("请粘贴 YouTube、公开播放页或媒体直链，或选择本地视频文件。")
+        unique_values = []
+        seen_sources = set()
+        for index, value in enumerate(values, 1):
+            preview = self._media_previews.get(index)
+            identity = (
+                (preview.source_type, preview.metadata.video_id)
+                if preview and preview.metadata
+                else ("input", value)
+            )
+            if identity not in seen_sources:
+                seen_sources.add(identity)
+                unique_values.append(value)
+        values = unique_values
         commands = [
             build_process_command(
                 value,
@@ -3779,6 +4165,7 @@ class LocalizerWindow:
                 output_quality=OUTPUT_QUALITIES[self.output_quality_label.get()],
                 output_fps=OUTPUT_FRAME_RATES[self.output_fps_label.get()],
                 output_height=OUTPUT_HEIGHTS[self.output_height_label.get()],
+                soft_subtitles=self.soft_subtitles.get(),
                 super_resolution=enhancement_mode,
                 rights_basis=rights.basis,
                 rights_holder=rights.rights_holder,
@@ -3805,7 +4192,11 @@ class LocalizerWindow:
         return commands, environment, workflow
 
     def _start(self) -> None:
-        if self._has_active_processes() or (self.worker and self.worker.is_alive()):
+        if (
+            self._enhancement_preview_running
+            or self._has_active_processes()
+            or (self.worker and self.worker.is_alive())
+        ):
             return
         try:
             commands, environment, provider = self._validate()
@@ -3855,6 +4246,7 @@ class LocalizerWindow:
                     ),
                     update_channel=UPDATE_CHANNELS[self.update_channel_label.get()],
                     resume=self.resume.get(),
+                    soft_subtitles=self.soft_subtitles.get(),
                 )
             )
         except (KeyError, OSError, ValueError):
@@ -3965,6 +4357,7 @@ class LocalizerWindow:
         self.stop_requested = False
         self.active_provider = provider
         self.active_enhancement = SUPER_RESOLUTION_MODES[self.enhancement_label.get()] != "off"
+        self._fused_enhancement_tasks.clear()
         self._progress_value = 0.0
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
@@ -4370,7 +4763,9 @@ class LocalizerWindow:
                     result, error = payload  # type: ignore[misc]
                     self._enhancement_preview_running = False
                     self._update_task_action_states()
-                    if error:
+                    if error == "cancelled":
+                        self._set_status("超分对比已停止，可以重新预览或开始任务", "active")
+                    elif error:
                         self._set_status("超分对比生成失败", "error")
                         messagebox.showerror("超分对比失败", str(error), parent=self.root)
                     else:
@@ -4385,6 +4780,26 @@ class LocalizerWindow:
                             parent=self.root,
                         )
                         self._open_local_path(result.output)
+                elif event == "preview_line":
+                    self._append_log(str(payload))
+                    if update := progress_update_from_output(
+                        str(payload), provider="download_only", enhancement=True
+                    ):
+                        self._set_status("预览 · " + update[1], "active")
+                elif event == "download_engine":
+                    version, error = payload
+                    self._set_status(
+                        "下载组件更新失败" if error else "下载组件已更新",
+                        "error" if error else "success",
+                    )
+                    if error:
+                        messagebox.showerror("下载组件更新", str(error), parent=self.root)
+                    else:
+                        messagebox.showinfo(
+                            "下载组件更新",
+                            f"yt-dlp {version} 已验证并保存，重新启动软件后生效。可从“视频平台”恢复内置组件。",
+                            parent=self.root,
+                        )
         except queue.Empty:
             pass
         self.root.after(100, self._poll_events)
@@ -4396,10 +4811,13 @@ class LocalizerWindow:
         queue_index: int | None = None,
         queue_position: int | None = None,
     ) -> None:
+        if "one encoding pass" in line:
+            self._fused_enhancement_tasks.add(queue_index)
         update = progress_update_from_output(
             line,
             provider=self.active_provider,
             enhancement=getattr(self, "active_enhancement", False),
+            fused_enhancement=queue_index in self._fused_enhancement_tasks,
         )
         if update is None:
             return
@@ -4627,11 +5045,14 @@ class LocalizerWindow:
             ):
                 return
             self.stop_requested = True
+            self._preview_cancel.set()
             with self._process_lock:
                 processes = list(self._active_processes)
             for process in processes:
                 terminate_process_tree(process)
         self._save_desktop_settings()
+        for dialog in self._platform_account_dialogs:
+            dialog.cancel.set()
         if self._queue_save_after_id is not None:
             self.root.after_cancel(self._queue_save_after_id)
             self._queue_save_after_id = None

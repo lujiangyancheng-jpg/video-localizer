@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import AppConfig, language_pair
@@ -13,6 +15,144 @@ from .rendering.preview import render_preview
 from .subtitles.bilingual import align_bilingual_tracks, combine_bilingual
 from .subtitles.parser import parse_subtitle, write_srt
 from .subtitles.styling import write_ass, write_bilingual_ass
+
+
+def _record_reviewed_translation(project: ProjectPaths, target: Path) -> None:
+    from .state import PipelineState, build_output_artifact
+
+    if not project.state_file.is_file():
+        return
+    state = PipelineState(project.state_file)
+    if record := state.data.steps.get("translate"):
+        record.output_files = [str(target.resolve())]
+        record.output_artifacts = [build_output_artifact(target)]
+    state.data.steps.pop("render", None)
+    state.mark_status("incomplete")
+
+
+def retranslate_paragraph(
+    project: ProjectPaths, config: AppConfig, cue_id: int
+) -> list[SubtitleCue]:
+    """Translate only the source paragraph covering the selected target cue, preserving edits elsewhere."""
+    from .pipeline import _group_local_ai_paragraphs, _source_subtitle, _translation_context
+    from .resource_gate import heavy_workload_slot
+    from .translation.cache import TranslationCache
+    from .translation.glossary import load_glossary
+    from .translation.offline import (
+        LocalOfflineProvider,
+        group_paragraph_cues,
+        paragraph_translation_to_cues,
+        translate_cues_contextually,
+    )
+    from .translation.ollama_local import LocalOllamaProvider
+    from .translation.openai_compatible import OpenAICompatibleProvider
+
+    session = load_subtitle_review_session(project, config)
+    selected = next((cue for cue in session.cues if cue.id == cue_id), None)
+    if selected is None:
+        raise LocalizerError("所选字幕不存在，请重新打开审核。")
+    source_code, target_code = language_pair(config.translation.direction)
+    sources = parse_subtitle(_source_subtitle(project, config))
+    groups = (
+        _group_local_ai_paragraphs(sources, source_code=source_code)
+        if config.translation.provider == "ollama"
+        else group_paragraph_cues(sources, source_code=source_code)
+    )
+    midpoint = (selected.start_ms + selected.end_ms) / 2
+    group = next(
+        (items for items in groups if items[0].start_ms <= midpoint < items[-1].end_ms), None
+    )
+    if group is None:
+        raise LocalizerError("所选字幕没有对应原文段落。")
+    glossary_path = Path(config.translation.glossary_file)
+    if not glossary_path.is_absolute():
+        glossary_path = next(
+            (
+                path
+                for path in (project.root / glossary_path, Path.cwd() / glossary_path)
+                if path.is_file()
+            ),
+            project.root / glossary_path,
+        )
+    context = _translation_context(load_project_metadata(project), load_glossary(glossary_path))
+    project.temp.mkdir(parents=True, exist_ok=True)
+    with (
+        tempfile.TemporaryDirectory(prefix="retranslate-", dir=project.temp) as directory,
+        heavy_workload_slot("selected paragraph translation"),
+    ):
+        cache = TranslationCache(Path(directory))
+        settings = config.translation
+        if settings.provider == "ollama":
+            provider = LocalOllamaProvider(
+                endpoint=settings.ollama_endpoint,
+                model=settings.ollama_model,
+                auto_pull=settings.ollama_auto_pull,
+                cache=cache,
+                source_code=source_code,
+                target_code=target_code,
+                context_tokens=settings.ollama_context_tokens,
+                timeout=settings.ollama_timeout_seconds,
+            )
+            text = provider.translate_paragraph(group, context)
+            replacement = paragraph_translation_to_cues(
+                text,
+                group,
+                target_code=target_code,
+                first_id=1,
+                max_characters=config.subtitles.max_chinese_chars_per_line
+                * config.subtitles.max_lines
+                if target_code == "zh"
+                else 84,
+            )
+        elif settings.provider == "offline":
+            provider = LocalOfflineProvider(
+                model_directory=(
+                    settings.offline_zh_en_model_directory
+                    if source_code == "zh"
+                    else settings.offline_model_directory
+                ).expanduser(),
+                model_url=settings.offline_zh_en_model_url
+                if source_code == "zh"
+                else settings.offline_model_url,
+                auto_download=settings.offline_auto_download,
+                device=settings.offline_device,
+                compute_type=settings.offline_compute_type,
+                cache=cache,
+                source_code=source_code,
+                target_code=target_code,
+            )
+            replacement = translate_cues_contextually(
+                provider,
+                group,
+                context,
+                source_code=source_code,
+                target_code=target_code,
+                batch_size=settings.batch_size,
+            )
+        elif settings.provider == "openai-compatible":
+            provider = OpenAICompatibleProvider(
+                endpoint=settings.endpoint,
+                model=settings.model,
+                cache=cache,
+                source_code=source_code,
+                target_code=target_code,
+            )
+            replacement = provider.translate_batch(group, context)
+        else:
+            raise LocalizerError("人工翻译模式请直接编辑文字；重译需要本地翻译模型或 API。")
+    start, end = group[0].start_ms, group[-1].end_ms
+    retained = [cue for cue in session.cues if not start <= (cue.start_ms + cue.end_ms) / 2 < end]
+    updated = sorted([*retained, *replacement], key=lambda cue: (cue.start_ms, cue.end_ms))
+    updated = [cue.model_copy(update={"id": index}) for index, cue in enumerate(updated, 1)]
+    backup = session.subtitle_path.with_name(
+        session.subtitle_path.stem
+        + ".before-retranslate-"
+        + datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        + ".srt"
+    )
+    write_srt(backup, session.cues)
+    save_reviewed_subtitles(session, config, updated)
+    return updated
 
 
 @dataclass(frozen=True)
@@ -59,6 +199,7 @@ def save_reviewed_subtitles(
     for cue in cues:
         cue.validate_timing()
     write_srt(target_path, cues)
+    _record_reviewed_translation(session.project, target_path)
     video_size = _video_size(session.project)
     outputs = [target_path]
     if config.subtitle_mode == "chinese":

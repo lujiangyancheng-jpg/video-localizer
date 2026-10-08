@@ -406,6 +406,13 @@ def process_command(
         ),
     ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v")] = False,
+    soft_subtitles: Annotated[
+        bool | None,
+        typer.Option(
+            "--soft-subtitles/--no-soft-subtitles",
+            help="Also create a selectable-subtitle MP4; disable for single-pass AI plus burned subtitles.",
+        ),
+    ] = None,
 ) -> None:
     """Run acquisition, source subtitles/transcription, translation, and rendering."""
     config = _configured(
@@ -443,6 +450,10 @@ def process_command(
             + ". Expected one of: "
             + ", ".join(sorted(FORCE_STEPS))
             + "."
+        )
+    if soft_subtitles is not None:
+        config = config.model_copy(
+            update={"render": config.render.model_copy(update={"soft_subtitles": soft_subtitles})}
         )
     result = process_pipeline(
         input_value,
@@ -885,6 +896,36 @@ def enhancement_preview_command(
     )
 
 
+@app.command("source-preview")
+def source_preview_command(
+    source: Annotated[
+        str, typer.Argument(help="Local video, project directory, or supported media URL.")
+    ],
+    output: Annotated[Path, typer.Option("--output")],
+    mode: Annotated[str, typer.Option("--super-resolution")] = "general",
+    start: Annotated[float, typer.Option("--start", min=0)] = 0,
+    duration: Annotated[float, typer.Option("--duration", min=1, max=30)] = 10,
+    output_height: Annotated[int | None, typer.Option("--output-height", min=144, max=4320)] = None,
+    output_fps: Annotated[int | None, typer.Option("--output-fps", min=1, max=240)] = None,
+) -> None:
+    """Test a short source clip without starting the full localization pipeline."""
+    from .enhancement.preview import preview_source
+
+    config = _configured(
+        None, super_resolution=mode, output_height=output_height, output_fps=output_fps
+    )
+    configure_logging(output.parent / "preview.log")
+    result = preview_source(source, output, config, start=start, duration=duration)
+    atomic_write_json(
+        output.with_suffix(".json"),
+        {
+            "elapsed_seconds": result.elapsed_seconds,
+            "estimated_full_seconds": result.estimated_full_seconds,
+        },
+    )
+    console.print(f"Comparison created: {result.output}")
+
+
 @app.command("metadata")
 def metadata_command(
     project_path: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
@@ -902,6 +943,21 @@ def metadata_command(
     )
     for output in outputs:
         console.print(f"- {output.name}")
+
+
+@app.command("retranslate")
+def retranslate_command(
+    project_path: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    cue_id: Annotated[int, typer.Option("--cue-id", min=1)],
+) -> None:
+    """Retranslate the selected subtitle's source paragraph without touching other paragraphs."""
+    from .review import retranslate_paragraph
+
+    project = _project(project_path)
+    cues = retranslate_paragraph(project, load_project_config(project), cue_id)
+    console.print(
+        f"Selected paragraph updated; {len(cues)} target cues. Previous subtitles were backed up."
+    )
 
 
 @app.command("validate")
@@ -926,7 +982,13 @@ def validate_command(
             checked += 1
     for rendered in (project.chinese_hardsub, project.english_hardsub):
         if rendered.is_file():
-            validate_rendered_video(rendered, expected_duration=metadata.duration, decode=decode)
+            validate_rendered_video(
+                rendered,
+                expected_duration=metadata.duration,
+                decode=decode,
+                require_audio=bool(metadata.audio_streams)
+                or metadata.audio_codec not in {"", "none"},
+            )
             console.print(f"[green]Valid and decodable:[/] {rendered}")
             checked += 1
     if not checked:
@@ -1021,6 +1083,8 @@ KNOWN_COMMANDS = {
     "render",
     "preview",
     "enhancement-preview",
+    "source-preview",
+    "retranslate",
     "metadata",
     "validate",
     "clean",

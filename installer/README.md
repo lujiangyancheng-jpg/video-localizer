@@ -1,5 +1,9 @@
 # Windows offline installer
 
+Application `0.7.0.16` reuses the verified `0.7.0` model/component packs. The desktop component
+manager can now install or repair selected packs after setup, using Release SHA-256 validation;
+Whisper and Local AI integrity scans run in the background rather than freezing the interface.
+
 `build_offline_installer.ps1` creates self-contained Windows x64 base packages. Both tiers bundle
 Python/Tk, hardware-accelerated FFmpeg, both Argos translation models, and one curated Noto Sans
 CJK SC font for subtitle rendering. A newly installed copy does not require a system font or

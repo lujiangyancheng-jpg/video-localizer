@@ -13,6 +13,7 @@ from .download.direct import (
     is_direct_media_url,
 )
 from .download.local import inspect_local
+from .download.platforms import inspect_platform, normalize_share_input, platform_for_url
 from .download.webpage import inspect_webpage_media, is_webpage_url
 from .download.youtube import inspect_youtube, is_youtube_url
 from .errors import InputValidationError
@@ -33,6 +34,7 @@ class MediaPreview:
     thumbnail_url: str
     estimated_bytes: int | None
     metadata: SourceMetadata | None = None
+    available_formats: tuple[str, ...] = ()
 
 
 def _format_size(size_bytes: int | None) -> str:
@@ -89,6 +91,7 @@ def _from_metadata(
     metadata: SourceMetadata,
     *,
     estimated_bytes: int | None,
+    formats: list[dict[str, Any]] | None = None,
 ) -> MediaPreview:
     return MediaPreview(
         source=source,
@@ -102,12 +105,31 @@ def _from_metadata(
         thumbnail_url=metadata.thumbnail_url,
         estimated_bytes=estimated_bytes,
         metadata=metadata,
+        available_formats=tuple(
+            dict.fromkeys(
+                f"{item.get('height')}p · {float(item.get('fps') or 0):g} FPS · {item.get('vcodec') or '视频'}"
+                for item in sorted(
+                    formats or [],
+                    key=lambda item: (item.get("height") or 0, item.get("fps") or 0),
+                    reverse=True,
+                )
+                if item.get("height") and item.get("vcodec") not in {None, "none"}
+            )
+        ),
     )
 
 
 def inspect_media_preview(source: str) -> MediaPreview:
     """Inspect a supported source without downloading or modifying a project."""
-    value = source.strip()
+    value = normalize_share_input(source)
+    if platform_for_url(value):
+        metadata, info = inspect_platform(value)
+        return _from_metadata(
+            value,
+            metadata,
+            estimated_bytes=estimate_download_bytes(info),
+            formats=info.get("formats"),
+        )
     if cached := load_cached_inspection(value):
         estimated_bytes = None
         if cached.source_type == "local":
@@ -118,7 +140,12 @@ def inspect_media_preview(source: str) -> MediaPreview:
         return _from_metadata(value, cached, estimated_bytes=estimated_bytes)
     if is_youtube_url(value):
         metadata, info = inspect_youtube(value)
-        return _from_metadata(value, metadata, estimated_bytes=estimate_download_bytes(info))
+        return _from_metadata(
+            value,
+            metadata,
+            estimated_bytes=estimate_download_bytes(info),
+            formats=info.get("formats"),
+        )
     if is_direct_media_url(value):
         metadata, info = inspect_direct_media(value)
         return _from_metadata(value, metadata, estimated_bytes=estimate_download_bytes(info))

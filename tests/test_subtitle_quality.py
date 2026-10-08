@@ -100,3 +100,35 @@ def test_quality_audit_treats_arabic_indic_digits_as_the_same_number() -> None:
     )
 
     assert "number_consistency" not in report["findings_by_category"]
+
+
+def test_paragraph_audit_allows_numbers_and_terms_to_move_between_resegmented_cues():
+    source = [
+        SubtitleCue(id=1, start_ms=0, end_ms=2000, text="Nova costs 100."),
+        SubtitleCue(id=2, start_ms=2000, end_ms=4000, text="Delivery takes 2 days."),
+    ]
+    target = [
+        SubtitleCue(id=10, start_ms=0, end_ms=1500, text="两天内交付，费用为"),
+        SubtitleCue(id=11, start_ms=1500, end_ms=4000, text="新星计划 100；交付时间 2 天。"),
+    ]
+    report = audit_subtitles(
+        target,
+        language="zh",
+        max_lines=2,
+        preferred_line_length=30,
+        source_cues=source,
+        source_groups=[source],
+        glossary={"Nova": "新星计划"},
+    )
+    assert "number_consistency" not in report["findings_by_category"]
+    assert "term_consistency" not in report["findings_by_category"]
+
+
+def test_paragraph_audit_still_flags_a_missing_number_after_resegmentation():
+    source = [SubtitleCue(id=1, start_ms=0, end_ms=2000, text="There are 100 units and 2 boxes.")]
+    target = [SubtitleCue(id=20, start_ms=0, end_ms=2000, text="共有 100 个单位。")]
+    report = audit_subtitles(
+        target, language="zh", max_lines=2, preferred_line_length=30, source_groups=[source]
+    )
+    assert report["flagged_cue_ids"] == [20]
+    assert report["findings_by_category"]["number_consistency"] == 1

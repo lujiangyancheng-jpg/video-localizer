@@ -22,6 +22,8 @@ _SENSITIVE_KEY_PARTS = (
     "token",
     "secret",
     "password",
+    "cookie",
+    "sessdata",
     "authorization",
     "endpoint",
     "url",

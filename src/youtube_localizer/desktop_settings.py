@@ -47,6 +47,7 @@ class DesktopSettings:
     output_directory: str = ""
     update_channel: str = "stable"
     resume: bool = True
+    soft_subtitles: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -118,6 +119,7 @@ def _settings_from_mapping(data: Mapping[str, Any]) -> DesktopSettings:
             data.get("update_channel"), VALID_UPDATE_CHANNELS, defaults.update_channel
         ),
         resume=data.get("resume") if isinstance(data.get("resume"), bool) else defaults.resume,
+        soft_subtitles=data.get("soft_subtitles") if isinstance(data.get("soft_subtitles"), bool) else defaults.soft_subtitles,
     )
 
 
