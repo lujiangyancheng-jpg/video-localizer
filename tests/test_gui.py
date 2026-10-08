@@ -212,6 +212,7 @@ def test_start_routes_dynamic_page_through_browser_capture_before_pipeline() -> 
     window = object.__new__(LocalizerWindow)
     window._has_active_processes = lambda: False
     window.worker = None
+    window._enhancement_preview_running = False
     window._analysis_worker = None
     window._validate = lambda: ([["python", "main.py", "process", page]], {}, "download_only")
     window.input_value = FakeVariable()
@@ -542,6 +543,18 @@ def test_download_progress_includes_transfer_speed_and_eta() -> None:
 
     assert value == 50.0
     assert message == "正在下载原视频：50.0% · 12.5MiB/s · 剩余 00:04"
+
+
+def test_fused_enhancement_progress_uses_the_final_rendering_stage() -> None:
+    value, message = progress_update_from_output(
+        "AI super resolution: 100/200 (50.0%); 12 fps; ETA 8s",
+        provider="ollama",
+        enhancement=True,
+        fused_enhancement=True,
+    ) or (None, "")
+    assert value == 87.5
+    assert "AI 超分与字幕压制" in message
+    assert "预计剩余 8 秒" in message
 
 
 def test_completion_attention_always_rings_the_application_bell() -> None:

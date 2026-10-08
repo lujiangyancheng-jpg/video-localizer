@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,6 +82,24 @@ def component_inventory(root: Path | None = None) -> tuple[InstalledComponent, .
     local_models = models / "ollama"
     local_runtime = runtime / "ollama"
     super_resolution = runtime / "super-resolution"
+    manifest = local_models / "manifests" / "registry.ollama.ai" / "library" / "qwen3" / "4b"
+    local_required = [local_runtime / "ollama.exe", manifest]
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            for layer in [data["config"], *data["layers"]]:
+                digest = str(layer["digest"])
+                if (
+                    not digest.startswith("sha256:")
+                    or len(digest) != 71
+                    or any(c not in "0123456789abcdef" for c in digest[7:])
+                ):
+                    raise ValueError("Invalid layer")
+                local_required.append(local_models / "blobs" / digest.replace(":", "-"))
+            if not data["layers"]:
+                raise ValueError("No layers")
+        except (OSError, ValueError, KeyError, TypeError):
+            local_required.append(local_models / "invalid-manifest")
     return (
         component(
             "whisper-small",
@@ -102,10 +121,7 @@ def component_inventory(root: Path | None = None) -> tuple[InstalledComponent, .
             "local-ai",
             "Local AI Qwen3:4b",
             (local_models, local_runtime),
-            (
-                local_runtime / "ollama.exe",
-                local_models / "manifests" / "registry.ollama.ai" / "library" / "qwen3" / "4b",
-            ),
+            tuple(local_required),
             "无需 API 的段落翻译",
         ),
         component(
@@ -115,14 +131,16 @@ def component_inventory(root: Path | None = None) -> tuple[InstalledComponent, .
             (
                 super_resolution / "waifu2x-ncnn-vulkan.exe",
                 super_resolution / "models-upconv_7_photo" / "noise1_scale2.0x_model.param",
+                super_resolution / "models-upconv_7_photo" / "noise1_scale2.0x_model.bin",
                 super_resolution / "models-cunet" / "noise1_scale2.0x_model.param",
+                super_resolution / "models-cunet" / "noise1_scale2.0x_model.bin",
             ),
             "通用实拍与动画画质增强",
         ),
     )
 
 
-def verify_optional_components(root: Path) -> list[str]:
+def verify_optional_components(root: Path, *, selected: str | None = None) -> list[str]:
     verified: list[str] = []
 
     def require(path: Path) -> None:
@@ -138,6 +156,8 @@ def verify_optional_components(root: Path) -> list[str]:
         "small": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
         "medium": "9b45e1009dcc4ab601eff815b61d80e60ce3fd8c74c1a14f4a282258286b51ae",
     }.items():
+        if selected is not None and selected != f"whisper-{name}":
+            continue
         directory = root / "models" / f"faster-whisper-{name}"
         marker = root / "models" / f"model-pack-{name.title()}.json"
         if directory.exists() or marker.exists():
@@ -150,7 +170,7 @@ def verify_optional_components(root: Path) -> list[str]:
 
     models = root / "models" / "ollama"
     runtime = root / "runtime" / "ollama" / "ollama.exe"
-    if (
+    if selected in {None, "local-ai"} and (
         models.exists()
         or runtime.exists()
         or (root / "models" / "model-pack-local-ai.json").exists()
@@ -171,4 +191,18 @@ def verify_optional_components(root: Path) -> list[str]:
                 raise ValueError("Invalid local AI layer digest.")
             digest(models / "blobs" / f"sha256-{sha}", sha)
         verified.append("Local AI Qwen3:4b")
+    super_resolution = root / "runtime" / "super-resolution"
+    if selected in {None, "super-resolution"} and super_resolution.exists():
+        require(super_resolution / "waifu2x-ncnn-vulkan.exe")
+        manifest = root / "models" / "super-resolution-pack.json"
+        if manifest.is_file():
+            data = json.loads(manifest.read_text(encoding="utf-8-sig"))
+            expected = data.get("executable_sha256", "")
+            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+                raise ValueError("Invalid super-resolution executable checksum.")
+            digest(super_resolution / "waifu2x-ncnn-vulkan.exe", expected)
+        for model in ("models-upconv_7_photo", "models-cunet"):
+            for suffix in ("param", "bin"):
+                require(super_resolution / model / f"noise1_scale2.0x_model.{suffix}")
+        verified.append("AI Super Resolution")
     return verified

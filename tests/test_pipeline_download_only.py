@@ -150,7 +150,13 @@ def test_download_only_applies_selected_lower_resolution_and_fps(
         result = process_pipeline(url, config)
 
     transform.assert_called_once()
-    validate.assert_called_once_with(project.enhanced_source, expected_duration=2.0)
+    validate.assert_called_once_with(
+        project.enhanced_source,
+        expected_duration=2.0,
+        require_audio=True,
+        expected_height=720,
+        expected_frame_rate=30,
+    )
     assert result.status == "downloaded"
     assert project.enhanced_source in result.outputs
     assert project.enhanced_source.read_bytes() == b"converted 720p 30fps"

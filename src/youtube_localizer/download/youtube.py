@@ -16,11 +16,13 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from ..config import DownloadConfig
+from ..downloader_updates import activate_downloader_update
 from ..errors import InputValidationError, LocalizerError
 from ..models import SourceMetadata
 from ..utils.files import atomic_write_json
 
 LOGGER = logging.getLogger(__name__)
+activate_downloader_update()
 YOUTUBE_HOSTS = {
     "youtube.com",
     "www.youtube.com",
@@ -65,6 +67,23 @@ def youtube_video_id(value: str) -> str | None:
     else:
         return None
     return candidate if VIDEO_ID_RE.fullmatch(candidate or "") else None
+
+
+class PlatformDownloadLogger:
+    """Never forward upstream URLs, cookie values or request headers into project logs."""
+
+    def debug(self, message: str) -> None:
+        if progress := re.search(r"\[download\]\s+([\d.]+)%", message):
+            LOGGER.info("[download] %s%%", progress[1])
+
+    def info(self, message: str) -> None:
+        self.debug(message)
+
+    def warning(self, message: str) -> None:
+        pass
+
+    def error(self, message: str) -> None:
+        pass
 
 
 def _youtube_dl(options: dict[str, Any]):
@@ -172,7 +191,12 @@ def inspect_youtube(url: str) -> tuple[SourceMetadata, dict[str, Any]]:
 
 
 def _run_youtube_download(url: str, options: dict[str, Any]) -> Path:
+    options = dict(options)
+    account_platform = options.pop("_localizer_account_platform", None)
     with _youtube_dl(options) as ydl:
+        if account_platform:
+            from .accounts import apply_account
+            apply_account(ydl, account_platform)
         downloaded_info = ydl.extract_info(url, download=True)
         if not isinstance(downloaded_info, dict):
             raise LocalizerError("yt-dlp did not return downloaded video information.")
@@ -201,6 +225,8 @@ def download_media(
     config: DownloadConfig,
     *,
     source_description: str,
+    account_platform: str | None = None,
+    section: tuple[float, float] | None = None,
 ) -> Path:
     """Download one public, non-DRM media source without requesting captions."""
     destination_dir.mkdir(parents=True, exist_ok=True)
@@ -222,6 +248,13 @@ def download_media(
         "subtitleslangs": [],
     }
     _enable_javascript_runtime(options)
+    if account_platform:
+        options["_localizer_account_platform"] = account_platform
+        options["logger"] = PlatformDownloadLogger()
+    if section is not None:
+        from yt_dlp.utils import download_range_func
+        options["download_ranges"] = download_range_func(None, [section])
+        options["force_keyframes_at_cuts"] = True
     if config.prefer_mp4:
         options["merge_output_format"] = "mp4"
     prepared: Path | None = None
@@ -248,6 +281,8 @@ def download_media(
             time.sleep(delay)
     if prepared is None:
         assert last_error is not None
+        if account_platform:
+            raise LocalizerError("平台下载失败，已保留下载片段。请检查平台账号会话、视频权限或稍后重试。") from None
         if _is_temporary_source_error(last_error):
             raise LocalizerError(
                 f"{source_description} temporarily limited or rejected the request. The partial "

@@ -330,3 +330,108 @@ def test_enhancement_comparison_is_side_by_side_and_estimates_full_runtime(
     assert result.output == output
     assert result.elapsed_seconds > 0
     assert result.estimated_full_seconds >= result.elapsed_seconds
+
+
+@pytest.mark.integration
+def test_fused_enhancement_burns_subtitles_at_global_segment_times_without_second_encode(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from youtube_localizer.config import AppConfig, SubtitleConfig
+    from youtube_localizer.enhancement import super_resolution as sr
+    from youtube_localizer.models import ProjectPaths, SourceMetadata, SubtitleCue
+    from youtube_localizer.pipeline import render_project
+    from youtube_localizer.rendering.validation import validate_rendered_video
+    from youtube_localizer.subtitles.styling import write_ass
+    from youtube_localizer.utils.files import atomic_write_json
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not shutil.which("ffprobe"):
+        pytest.skip("FFmpeg required")
+    project = ProjectPaths(tmp_path / "fused")
+    project.create()
+    source = project.source / "source_video.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=black:size=64x64:rate=4:duration=3",
+            "-c:v",
+            "libx264",
+            str(source),
+        ],
+        check=True,
+    )
+    atomic_write_json(
+        project.metadata,
+        SourceMetadata(
+            source_type="local",
+            source_input=str(source),
+            video_id="fused",
+            title="fused",
+            duration=3,
+            width=64,
+            height=64,
+            frame_rate=4,
+        ).model_dump(mode="json"),
+    )
+    style = SubtitleConfig(font="Arial", font_size=96, outline=0, shadow=0, position_y_percent=50)
+    write_ass(
+        project.chinese_ass,
+        [SubtitleCue(id=1, start_ms=1500, end_ms=2500, text="HELLO")],
+        style,
+        video_size=(128, 128),
+    )
+    executable = tmp_path / "test-runtime"
+    executable.write_bytes(b"runtime")
+    monkeypatch.setattr(sr, "super_resolution_runtime", lambda: (executable, tmp_path))
+    monkeypatch.setattr(sr, "SEGMENT_FRAMES", 4)
+
+    def copy_frames(_exe, inputs, outputs, *_args, **_kwargs):
+        for frame in inputs.glob("*.png"):
+            shutil.copy2(frame, outputs / frame.name)
+        return 0
+
+    monkeypatch.setattr(sr, "_run_upscaler_batch", copy_frames)
+    ordinary_render = MagicMock()
+    monkeypatch.setattr("youtube_localizer.pipeline.render_hardsub", ordinary_render)
+    config = AppConfig(
+        render={"codec": "libx264", "soft_subtitles": False}, enhancement={"mode": "general"}
+    )
+    output = render_project(project, config)
+    ordinary_render.assert_not_called()
+    validate_rendered_video(
+        output, expected_duration=3, require_audio=False, expected_height=128, expected_frame_rate=4
+    )
+
+    def brightness(seconds):
+        return sum(
+            subprocess.check_output(
+                [
+                    ffmpeg,
+                    "-v",
+                    "error",
+                    "-ss",
+                    str(seconds),
+                    "-i",
+                    str(output),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "gray",
+                    "pipe:1",
+                ]
+            )
+        )
+
+    assert brightness(0.5) < 500
+    assert brightness(1.75) > 5000
+    assert brightness(2.25) > 5000
+    assert brightness(2.75) < 500

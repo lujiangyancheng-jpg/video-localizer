@@ -192,6 +192,8 @@ def build_enhanced_encode_command(
     render: RenderConfig,
     ffmpeg: str,
     include_audio: bool = True,
+    subtitle_file: Path | None = None,
+    subtitle_start_seconds: float = 0,
 ) -> list[str]:
     command = [
         ffmpeg,
@@ -213,6 +215,14 @@ def build_enhanced_encode_command(
     filters = f"scale=-2:{target_height}:flags=lanczos"
     if render.output_fps is not None and render.output_fps < frame_rate:
         filters += f",fps={render.output_fps}"
+    if subtitle_file is not None:
+        from ..rendering.ffmpeg import escape_filter_path
+        from ..resources import bundled_fonts_directory
+
+        filters += f",setpts=PTS+{subtitle_start_seconds:.6f}/TB,ass=filename='{escape_filter_path(subtitle_file)}'"
+        if fonts := bundled_fonts_directory():
+            filters += f":fontsdir='{escape_filter_path(fonts)}'"
+        filters += ",setpts=PTS-STARTPTS"
     command.extend(
         [
             "-map",
@@ -466,6 +476,7 @@ def _enhance_video_stream(
     frame_limit: int | None = None,
     total_frames: int = 0,
     include_audio: bool = True,
+    subtitle_file: Path | None = None,
 ) -> Path:
     """Restore video frames in bounded batches and encode one continuous enhanced MP4."""
     if enhancement.mode == "off":
@@ -506,7 +517,7 @@ def _enhance_video_stream(
     temp_output.unlink(missing_ok=True)
 
     active_ffmpeg, active_render = resolve_render_backend(
-        render.model_copy(update={"crf": max(10, render.crf - 3)}),
+        render.model_copy(update={"crf": render.crf if subtitle_file else max(10, render.crf - 3)}),
         ffmpeg,
     )
     frame_rate = min(frame_rate, render.output_fps or frame_rate)
@@ -526,6 +537,8 @@ def _enhance_video_stream(
         render=active_render,
         ffmpeg=active_ffmpeg,
         include_audio=include_audio,
+        subtitle_file=subtitle_file,
+        subtitle_start_seconds=start_frame / frame_rate,
     )
     extractor_command[0] = resolve_executable(extractor_command[0]) or extractor_command[0]
     encoder_command[0] = resolve_executable(encoder_command[0]) or encoder_command[0]
@@ -672,6 +685,7 @@ def enhance_video(
     working_directory: Path,
     ffmpeg: str = "ffmpeg",
     force: bool = False,
+    subtitle_file: Path | None = None,
 ) -> Path:
     """Checkpoint video-only segments and mux original audio once at the end.
 
@@ -699,6 +713,9 @@ def enhance_video(
             "duration": duration,
             "dimensions": [source_width, source_height],
             "runtime": build_output_artifact(executable).model_dump(mode="json"),
+            "subtitles": build_output_artifact(subtitle_file).model_dump(mode="json")
+            if subtitle_file
+            else None,
         }
     )
     checkpoint_root = working_directory / "checkpoints" / identity
@@ -748,6 +765,7 @@ def enhance_video(
                 frame_limit=count,
                 total_frames=total,
                 include_audio=False,
+                subtitle_file=subtitle_file,
             )
             atomic_write_json(record, build_output_artifact(segment).model_dump(mode="json"))
         segments.append(segment)
