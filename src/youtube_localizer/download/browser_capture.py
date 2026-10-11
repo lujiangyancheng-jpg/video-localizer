@@ -28,6 +28,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from ..errors import InputValidationError, LocalizerError
+from ..network import current_route
 from .direct import is_direct_media_candidate_url
 from .webpage import MAX_URL_CHARACTERS, _assert_public_http_url, is_webpage_url
 
@@ -258,7 +259,7 @@ def _wait_for_devtools(port: int, process: subprocess.Popen[bytes]) -> None:
     exited_at: float | None = None
     while time.monotonic() < deadline:
         try:
-            response = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=1)
+            response = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=1, trust_env=False)
             response.raise_for_status()
             if isinstance(response.json(), dict):
                 return
@@ -273,7 +274,7 @@ def _wait_for_devtools(port: int, process: subprocess.Popen[bytes]) -> None:
 
 
 def _target_websockets(port: int) -> dict[str, str]:
-    response = httpx.get(f"http://127.0.0.1:{port}/json/list", timeout=2)
+    response = httpx.get(f"http://127.0.0.1:{port}/json/list", timeout=2, trust_env=False)
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, list):
@@ -291,7 +292,7 @@ def _target_websockets(port: int) -> dict[str, str]:
 
 def _close_browser(port: int, process: subprocess.Popen[bytes]) -> None:
     try:
-        payload = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=1).json()
+        payload = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=1, trust_env=False).json()
         websocket_url = str(payload.get("webSocketDebuggerUrl") or "")
         if websocket_url.startswith("ws://"):
             with connect(
@@ -307,7 +308,7 @@ def _close_browser(port: int, process: subprocess.Popen[bytes]) -> None:
     shutdown_deadline = time.monotonic() + 5
     while time.monotonic() < shutdown_deadline:
         try:
-            httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=0.5).raise_for_status()
+            httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=0.5, trust_env=False).raise_for_status()
         except httpx.HTTPError:
             break
         time.sleep(0.1)
@@ -357,6 +358,7 @@ def capture_browser_media(
             "--disable-background-networking",
             "--disable-component-update",
             "--disable-features=msEdgeFirstRunExperience",
+            *current_route().browser_args(),
             "--new-window",
             page_url,
         ]

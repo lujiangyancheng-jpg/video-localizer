@@ -1,6 +1,6 @@
 # Windows offline installer
 
-Application `0.7.0.16` reuses the verified `0.7.0` model/component packs. The desktop component
+Application `0.7.0.17` reuses the verified `0.7.0` model/component packs. The desktop component
 manager can now install or repair selected packs after setup, using Release SHA-256 validation;
 Whisper and Local AI integrity scans run in the background rather than freezing the interface.
 

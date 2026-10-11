@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from ..config import DownloadConfig
 from ..errors import InputValidationError, LocalizerError
 from ..models import SourceMetadata
+from ..network import classify_network_failure
 from ..utils.hashing import hash_text
 from .accounts import apply_account
 from .youtube import PlatformDownloadLogger, _youtube_dl, download_media
@@ -84,7 +85,7 @@ def _extract(value: str, *, flat: bool = False) -> dict[str, Any]:
             raise
         # Do not copy upstream HTTP diagnostics that may contain signed URLs or session data.
         raise InputValidationError(
-            f"{platform} 视频解析失败。请在“平台账号”刷新登录，确认视频可在网页播放，再重试；平台接口变化或限流也可能导致失败。"
+            f"{platform} 视频解析失败。" + classify_network_failure(exc).message
         ) from None
     if not isinstance(info, dict):
         raise InputValidationError("平台未返回有效视频信息。")

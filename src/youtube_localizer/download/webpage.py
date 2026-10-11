@@ -19,6 +19,7 @@ import httpx
 
 from ..errors import InputValidationError
 from ..models import SourceMetadata
+from ..network import classify_network_failure, current_route
 from ..utils.hashing import hash_text
 from .direct import direct_media_id, inspect_direct_media, is_direct_media_candidate_url
 
@@ -258,7 +259,7 @@ def _fetch_public_html(url: str) -> tuple[str, str]:
         "User-Agent": WEBPAGE_USER_AGENT,
     }
     try:
-        with httpx.Client(headers=headers, follow_redirects=False, timeout=15) as client:
+        with httpx.Client(headers=headers, follow_redirects=False, timeout=15, **current_route().httpx_options()) as client:
             for redirect_count in range(MAX_WEBPAGE_REDIRECTS + 1):
                 _assert_public_http_url(current)
                 with client.stream("GET", current) as response:
@@ -277,7 +278,7 @@ def _fetch_public_html(url: str) -> tuple[str, str]:
                         )
                     if response.status_code in {401, 403}:
                         raise InputValidationError(
-                            "该播放页需要登录、Cookie 或额外权限；这些访问限制不会被绕过。"
+                            classify_network_failure("", status=response.status_code).message
                         )
                     if response.status_code == 429:
                         raise InputValidationError("该站点暂时限流，请稍后重试。")
@@ -287,8 +288,8 @@ def _fetch_public_html(url: str) -> tuple[str, str]:
         raise
     except httpx.HTTPError as exc:
         raise InputValidationError(
-            "无法读取这个公开播放页。请确认地址可直接访问，且不需要登录或浏览器验证。"
-        ) from exc
+            "无法读取这个公开播放页。" + classify_network_failure(exc).message
+        ) from None
     raise InputValidationError("无法完成播放页解析。")  # pragma: no cover
 
 
