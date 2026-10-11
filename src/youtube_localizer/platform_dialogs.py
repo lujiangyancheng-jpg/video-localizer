@@ -10,6 +10,8 @@ from tkinter import messagebox, ttk
 
 from .download.accounts import PLATFORMS, account_status, browser_sign_in, clear_account
 from .download.platforms import list_platform_entries
+from .errors import LocalizerError
+from .network import classify_network_failure, current_route, using_route
 
 
 class PlatformAccountsDialog:
@@ -64,8 +66,9 @@ class PlatformAccountsDialog:
         def worker() -> None:
             try:
                 browser_sign_in(platform, self.finish, self.cancel)
-            except Exception:
-                self.events.put((platform, "未能保存会话，请重新打开登录并完成扫码后再保存。"))
+            except Exception as exc:
+                failure = classify_network_failure(exc)
+                self.events.put((platform, failure.message if failure.code != "unknown" else "未能保存会话，请重新打开登录并完成扫码后再保存。"))
             else:
                 self.events.put((platform, ""))
 
@@ -129,12 +132,18 @@ class PlatformVideosDialog:
 
     def _analyze(self) -> None:
         source = self.value.get()
+        try:
+            route = current_route()
+        except LocalizerError as exc:
+            self.status.set(str(exc))
+            return
         self.analyze.configure(state="disabled")
         self.status.set("正在读取平台信息…")
 
         def worker() -> None:
             try:
-                self.events.put(list_platform_entries(source))
+                with using_route(route):
+                    self.events.put(list_platform_entries(source))
             except Exception as exc:
                 self.events.put(str(exc))
 

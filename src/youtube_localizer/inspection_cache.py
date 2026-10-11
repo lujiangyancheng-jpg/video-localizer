@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import SourceMetadata
+from .network import current_route
 from .onboarding import onboarding_state_directory
 from .utils.files import atomic_write_json, load_json
 from .utils.hashing import hash_text
@@ -69,6 +70,7 @@ def save_cached_inspection(
             "local_fingerprint": (
                 _local_fingerprint(source) if metadata.source_type == "local" else None
             ),
+            "network_route": current_route().fingerprint if metadata.source_type != "local" else None,
             "metadata": payload,
         },
     )
@@ -118,6 +120,8 @@ def load_cached_inspection(
             return None
         source_value = str(Path(source).expanduser().resolve())
     else:
+        if data.get("network_route") != current_route().fingerprint:
+            return None
         source_value = source.strip()
     return metadata.model_copy(update={"source_input": source_value, "source_url": source_value})
 

@@ -41,6 +41,7 @@ requests==2.34.2
 rich==14.3.4
 sentencepiece==0.2.2
 shellingham==1.5.4
+socksio==1.0.0
 tenacity==9.1.4
 tokenizers==0.23.1
 tqdm==4.70.0

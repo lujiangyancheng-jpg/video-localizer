@@ -16,6 +16,7 @@ from typing import Any
 from websockets.sync.client import connect
 
 from ..errors import LocalizerError
+from ..network import current_route
 from ..onboarding import onboarding_state_directory
 from .browser_capture import (
     _close_browser,
@@ -189,6 +190,7 @@ def browser_sign_in(platform: str, finish: threading.Event, cancel: threading.Ev
                 "--no-default-browser-check",
                 "--disable-sync",
                 "--disable-background-mode",
+                *current_route().browser_args(),
                 "--new-window",
                 PLATFORMS[platform][1],
             ],

@@ -51,6 +51,8 @@ from .inspection_cache import save_cached_inspection
 from .installation import component_inventory, installation_root, verify_optional_components
 from .media_preview import MediaPreview, inspect_media_preview, media_preview_summary
 from .models import ProjectPaths
+from .network import classify_network_failure, current_route, using_route
+from .network_dialog import NetworkDialog
 from .onboarding import (
     model_release_page_url,
     quick_readiness_message,
@@ -494,6 +496,9 @@ def super_resolution_installation_message(mode: str) -> str | None:
 def friendly_failure_summary(log_text: str) -> str:
     """Translate common terminal failures into one short recovery action."""
     normalized = log_text.casefold()
+    network_failure = classify_network_failure(log_text)
+    if network_failure.code != "unknown":
+        return network_failure.message
     if "媒体服务器拒绝" in normalized and any(marker in normalized for marker in ("401", "403")):
         return (
             "这条媒体直链已过期，或依赖浏览器凭据。"
@@ -2530,11 +2535,13 @@ class LocalizerWindow:
             command=self._choose_local_file,
         )
         self.local_file_button.grid(row=0, column=3)
-        platform_menu = ttk.Menubutton(sourcebar, text="视频平台", style="Source.TButton")
+        platform_menu = ttk.Menubutton(sourcebar, text="视频与网络", style="Source.TButton")
         menu = tk.Menu(platform_menu, tearoff=False)
         menu.add_command(label="平台账号（B站 / 抖音）", command=self._open_platform_accounts)
         menu.add_command(label="选择平台视频 / B站分P", command=self._open_platform_videos)
         menu.add_command(label="查看所选视频可用画质", command=self._show_media_formats)
+        menu.add_separator()
+        menu.add_command(label="网络与连接（统一线路 / 诊断）", command=self._open_network_settings)
         menu.add_separator()
         menu.add_command(label="更新网站下载组件", command=self._update_download_engine)
         menu.add_command(label="恢复内置下载组件", command=self._rollback_download_engine)
@@ -3231,6 +3238,13 @@ class LocalizerWindow:
         if generation != self._analysis_generation or not sources:
             return
 
+        try:
+            route = current_route()
+        except LocalizerError as exc:
+            for index, _source in enumerate(sources, start=1):
+                self.events.put(("media_analysis_result", (generation, index, None, str(exc))))
+            return
+
         def worker() -> None:
             for index, source in enumerate(sources, start=1):
                 if generation != self._analysis_generation:
@@ -3240,7 +3254,8 @@ class LocalizerWindow:
                     continue
                 self.events.put(("media_analysis_started", (generation, index, source)))
                 try:
-                    preview = inspect_media_preview(source)
+                    with using_route(route):
+                        preview = inspect_media_preview(source)
                 except (OSError, ValueError, LocalizerError) as exc:
                     message = " ".join(str(exc).split())
                     if len(message) > 150:
@@ -3461,6 +3476,7 @@ class LocalizerWindow:
                     return
                 process = subprocess.Popen(
                     command,
+                    env=current_route().environment(),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -3566,7 +3582,7 @@ class LocalizerWindow:
             return
         try:
             commands, environment, provider = self._validate()
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, LocalizerError) as exc:
             messagebox.showwarning("还不能继续", str(exc), parent=self.root)
             return
         if not 1 <= index <= len(commands):
@@ -3853,6 +3869,29 @@ class LocalizerWindow:
         )
         if path:
             self.input_value.set(path)
+
+    def _open_network_settings(self) -> None:
+        def can_apply() -> bool:
+            return not (
+                self._has_active_processes()
+                or (self.worker and self.worker.is_alive())
+                or (self._analysis_worker and self._analysis_worker.is_alive())
+                or (self.browser_capture_dialog and self.browser_capture_dialog.window.winfo_exists())
+                or any(dialog.window.winfo_exists() for dialog in self._platform_account_dialogs)
+            )
+
+        def applied() -> None:
+            self._media_previews.clear()
+            self._media_preview_errors.clear()
+            self._task_errors.clear()
+            for index, state in self._task_states.items():
+                if state != "completed":
+                    self._task_states[index] = "pending"
+            self._replace_task_sources(queue_input_values(self.input_value.get()), schedule_analysis=True)
+            self._set_status("网络线路已更新，正在重新解析队列。IP 绑定的直链请重新抓取。", "muted")
+
+        NetworkDialog(self.root, target=self.input_value.get().splitlines()[0] if self.input_value.get() else "",
+                      can_apply=can_apply, on_apply=applied)
 
     def _open_platform_accounts(self) -> None:
         self._platform_account_dialogs = [
@@ -4178,7 +4217,7 @@ class LocalizerWindow:
             )
             for value in values
         ]
-        environment = os.environ.copy()
+        environment = current_route().environment()
         if provider == "openai-compatible" and subtitle_mode != "download_only":
             endpoint = self.endpoint.get().strip()
             model = self.model.get().strip()
@@ -4266,6 +4305,8 @@ class LocalizerWindow:
         """Start a queue attempt and retain only its commands for safe retry."""
         if not commands:
             return
+
+        environment = current_route().environment(environment)
 
         resolved_task_indices = task_indices or tuple(range(1, len(commands) + 1))
         if len(resolved_task_indices) != len(commands):

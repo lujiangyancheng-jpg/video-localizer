@@ -13,6 +13,7 @@ import httpx
 from ..config import DownloadConfig
 from ..errors import InputValidationError, LocalizerError
 from ..models import SourceMetadata
+from ..network import classify_network_failure, current_route
 from ..utils.hashing import hash_text
 from .youtube import (
     _enable_javascript_runtime,
@@ -150,16 +151,12 @@ def _probe_direct_media_content_type(url: str) -> str:
         "Accept": "video/*,audio/*,application/dash+xml,application/vnd.apple.mpegurl,*/*;q=0.5",
         "User-Agent": "Localize-Studio/0.7 (authorized-direct-media-client)",
     }
-    head_detail = ""
     try:
-        response = httpx.head(url, headers=headers, follow_redirects=True, timeout=20)
+        response = httpx.head(url, headers=headers, follow_redirects=True, timeout=20, **current_route().httpx_options())
         if response.is_success:
             content_type = response.headers.get("content-type", "")
             if _content_type_is_media(content_type):
                 return content_type
-            head_detail = f"HEAD returned {content_type or 'no content type'}"
-        else:
-            head_detail = f"HEAD returned HTTP {response.status_code}"
         if response.status_code in {401, 404, 410, 429}:
             response.raise_for_status()
     except httpx.HTTPError as exc:
@@ -167,7 +164,6 @@ def _probe_direct_media_content_type(url: str) -> str:
         status_code = response.status_code if response is not None else None
         if status_code in {401, 404, 410, 429}:
             raise InputValidationError(_direct_http_failure_message(status_code)) from exc
-        head_detail = str(exc)
 
     # Many signed CDNs reject HEAD (sometimes with 403) but permit a byte-range GET. The stream
     # context never consumes the response body, even if a server ignores the Range header.
@@ -178,6 +174,7 @@ def _probe_direct_media_content_type(url: str) -> str:
             headers={**headers, "Range": "bytes=0-0"},
             follow_redirects=True,
             timeout=20,
+            **current_route().httpx_options(),
         ) as response:
             response.raise_for_status()
             content_type = response.headers.get("content-type", "")
@@ -185,8 +182,8 @@ def _probe_direct_media_content_type(url: str) -> str:
         response = getattr(exc, "response", None)
         status_code = response.status_code if response is not None else None
         raise InputValidationError(
-            _direct_http_failure_message(status_code, detail=head_detail)
-        ) from exc
+            _direct_http_failure_message(status_code) if status_code else classify_network_failure(exc).message
+        ) from None
     if not _content_type_is_media(content_type):
         raise InputValidationError(
             "The direct URL did not identify itself as video or an HLS/DASH playlist. "
@@ -205,10 +202,9 @@ def _direct_http_failure_message(status_code: int | None, *, detail: str = "") -
         return f"这条媒体直链已失效或被移除（HTTP {status_code}）。请复制新的完整地址。"
     if status_code == 429:
         return "媒体服务器暂时限流（HTTP 429）。请稍后重试或重新复制最新的直链。"
-    suffix = f" 探测详情：{detail}" if detail else ""
     return (
         "无法验证这条无扩展名媒体直链。请确认地址完整、尚未过期、可公开访问，且不受 DRM 保护。"
-        + suffix
+        + classify_network_failure(detail, status=status_code).message
     )
 
 
@@ -260,8 +256,8 @@ def inspect_direct_media(url: str) -> tuple[SourceMetadata, dict[str, Any]]:
         raise InputValidationError(
             "yt-dlp could not inspect this direct media URL. Confirm that the address is current, "
             "publicly accessible, not DRM-protected, and points to the media file or playlist. "
-            f"Details: {detail}"
-        ) from exc
+            + classify_network_failure(exc).message
+        ) from None
     if not isinstance(info, dict):
         raise InputValidationError("yt-dlp did not return media metadata.")
     _validate_info(info)

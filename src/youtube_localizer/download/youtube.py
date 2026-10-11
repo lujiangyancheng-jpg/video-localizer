@@ -19,6 +19,7 @@ from ..config import DownloadConfig
 from ..downloader_updates import activate_downloader_update
 from ..errors import InputValidationError, LocalizerError
 from ..models import SourceMetadata
+from ..network import classify_network_failure, current_route
 from ..utils.files import atomic_write_json
 
 LOGGER = logging.getLogger(__name__)
@@ -91,7 +92,26 @@ def _youtube_dl(options: dict[str, Any]):
         from yt_dlp import YoutubeDL
     except ImportError as exc:
         raise LocalizerError("yt-dlp is not installed. Run: python -m pip install yt-dlp") from exc
-    return YoutubeDL(options)
+    route = current_route()
+    resolved = dict(options)
+    resolved["proxy"] = route.proxy  # Empty string explicitly disables ambient proxies.
+    resolved["socket_timeout"] = 20
+    resolved["retries"] = 1
+    resolved["fragment_retries"] = 1
+    resolved["extractor_retries"] = 1
+    resolved["hls_prefer_native"] = True
+    if route.proxy.startswith(("socks5:", "https:")):
+        # FFmpeg does not reliably support these proxy transports. Never let it
+        # silently use another route; HTTP/HLS/DASH use yt-dlp's native downloader.
+        resolved["external_downloader"] = {"default": "native"}
+        if resolved.get("download_ranges"):
+            raise InputValidationError("当前代理不支持 FFmpeg 远程片段预览。请改用本地视频预览，或在“网络与连接”填写代理客户端的 HTTP 端口。")
+    else:
+        # Even direct FFmpeg requests must ignore ambient HTTP_PROXY variables.
+        arguments = dict(resolved.get("external_downloader_args") or {})
+        arguments["ffmpeg_i"] = ["-http_proxy", route.proxy]
+        resolved["external_downloader_args"] = arguments
+    return YoutubeDL(resolved)
 
 
 def discover_javascript_runtimes() -> dict[str, str]:
@@ -164,8 +184,8 @@ def inspect_youtube(url: str) -> tuple[SourceMetadata, dict[str, Any]]:
             raise
         raise InputValidationError(
             "yt-dlp could not inspect this video. Confirm that it is public, available in your "
-            f"region, and not protected. Details: {exc}"
-        ) from exc
+            "region, and not protected. " + classify_network_failure(exc).message
+        ) from None
     if not isinstance(info, dict):
         raise InputValidationError("yt-dlp did not return video metadata.")
     _validate_info(info)
@@ -205,6 +225,8 @@ def _run_youtube_download(url: str, options: dict[str, Any]) -> Path:
 
 def _is_temporary_source_error(exc: Exception) -> bool:
     message = str(exc).lower()
+    if classify_network_failure(exc).retryable:
+        return True
     return any(
         marker in message
         for marker in (
@@ -269,7 +291,8 @@ def download_media(
             last_error = exc
             if not _is_temporary_source_error(exc) or attempt >= config.retry_attempts:
                 break
-            delay = config.retry_delay_seconds * attempt
+            delay = min(60, config.retry_delay_seconds * 2 ** (attempt - 1))
+            options["concurrent_fragment_downloads"] = 1
             LOGGER.warning(
                 "%s temporarily rejected the download (attempt %s/%s). "
                 "Keeping the partial file and retrying in %s seconds.",
@@ -282,17 +305,17 @@ def download_media(
     if prepared is None:
         assert last_error is not None
         if account_platform:
-            raise LocalizerError("平台下载失败，已保留下载片段。请检查平台账号会话、视频权限或稍后重试。") from None
+            raise LocalizerError("平台下载失败，已保留下载片段。" + classify_network_failure(last_error).message) from None
         if _is_temporary_source_error(last_error):
             raise LocalizerError(
                 f"{source_description} temporarily limited or rejected the request. The partial "
                 "download is retained; wait a few minutes and resume the project. The application "
-                f"does not use cookies or bypass access controls. Details: {last_error}"
-            ) from last_error
+                "does not bypass access controls. " + classify_network_failure(last_error).message
+            ) from None
         raise LocalizerError(
             f"yt-dlp failed to download the {source_description}. The partial download is "
-            f"retained so a later --resume can continue it. Details: {last_error}"
-        ) from last_error
+            "retained so a later --resume can continue it. " + classify_network_failure(last_error).message
+        ) from None
 
     candidates = [
         path
@@ -332,7 +355,7 @@ def save_thumbnail(url: str, destination: Path) -> None:
     if not url:
         return
     try:
-        response = httpx.get(url, follow_redirects=True, timeout=30)
+        response = httpx.get(url, follow_redirects=True, timeout=30, **current_route().httpx_options())
         response.raise_for_status()
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temp_name = tempfile.mkstemp(
