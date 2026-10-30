@@ -626,3 +626,38 @@ def test_friendly_failure_summary_recommends_a_recovery_action(
     log_text: str, expected: str
 ) -> None:
     assert expected in friendly_failure_summary(log_text)
+
+
+def test_latest_task_error_wins_over_previous_rate_limit():
+    import json
+
+    earlier = json.dumps({"level": "WARNING", "message": "HTTP Error 429"})
+    fatal = json.dumps({"level": "ERROR", "exception": "RuntimeError: CUDA error: out of memory"})
+    assert "显存" in friendly_failure_summary(earlier + "\n" + fatal)
+    assert "显存" in friendly_failure_summary("Earlier HTTP Error 429; current task CUDA error: out of memory")
+    assert "显存" in friendly_failure_summary("HTTP Error 429\nRuntimeError: CUDA error: out of memory")
+    assert "暂时限制" in friendly_failure_summary("CUDA error: out of memory\nHTTP Error 429")
+
+
+def test_local_preview_is_inspected_despite_broken_proxy(tmp_path):
+    from unittest.mock import patch
+
+    from youtube_localizer.errors import InputValidationError
+
+    video = tmp_path / "owned.mp4"
+    video.touch()
+    window = object.__new__(LocalizerWindow)
+    window._analysis_generation = 1
+    window._task_states = {}
+    window.events = Queue()
+    with (
+        patch("youtube_localizer.network.current_route", side_effect=InputValidationError("broken proxy")),
+        patch("youtube_localizer.gui.inspect_media_preview", return_value="local-preview") as inspect,
+    ):
+        window._begin_media_analysis(1, ["https://media.test/remote.mp4", str(video)])
+        window._analysis_worker.join(timeout=5)
+        assert not window._analysis_worker.is_alive()
+        inspect.assert_called_once_with(str(video))
+    results = [payload for event, payload in window.events.queue if event == "media_analysis_result"]
+    assert results[0][-1] == "broken proxy"
+    assert results[1][2] == "local-preview"

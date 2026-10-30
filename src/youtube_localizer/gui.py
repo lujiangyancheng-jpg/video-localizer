@@ -12,6 +12,7 @@ import time
 import tkinter as tk
 import uuid
 import webbrowser
+from collections import deque
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import suppress
@@ -51,7 +52,7 @@ from .inspection_cache import save_cached_inspection
 from .installation import component_inventory, installation_root, verify_optional_components
 from .media_preview import MediaPreview, inspect_media_preview, media_preview_summary
 from .models import ProjectPaths
-from .network import classify_network_failure, current_route, using_route
+from .network import classify_network_failure, route_for_sources, using_route
 from .network_dialog import NetworkDialog
 from .onboarding import (
     model_release_page_url,
@@ -493,9 +494,28 @@ def super_resolution_installation_message(mode: str) -> str | None:
     )
 
 
+def latest_failure_text(log_text: str) -> str:
+    """Prefer the latest structured error or fatal line, not an old retry warning."""
+    last_error = ""
+    for line in log_text.splitlines():
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError):
+            record = None
+        if isinstance(record, dict):
+            if str(record.get("level", "")).upper() in {"ERROR", "CRITICAL"}:
+                last_error = str(record.get("exception") or record.get("message") or line)
+        elif re.search(r"error|exception|failed|failure|失败|错误|显存不足|out of memory", line, re.I):
+            last_error = line
+    return last_error or log_text
+
+
 def friendly_failure_summary(log_text: str) -> str:
     """Translate common terminal failures into one short recovery action."""
+    log_text = latest_failure_text(log_text)
     normalized = log_text.casefold()
+    if any(marker in normalized for marker in ("out of memory", "cuda error", "cublas", "显存不足")):
+        return "显存或 CUDA 运行环境不足。请关闭占用显卡的软件后重试；仍失败时改用 Whisper Small。"
     network_failure = classify_network_failure(log_text)
     if network_failure.code != "unknown":
         return network_failure.message
@@ -510,10 +530,6 @@ def friendly_failure_summary(log_text: str) -> str:
         return (
             "YouTube 暂时限制了请求。请等待几分钟后点击“重试未完成任务”；已经完成的阶段不会重做。"
         )
-    if any(
-        marker in normalized for marker in ("out of memory", "cuda error", "cublas", "显存不足")
-    ):
-        return "显存或 CUDA 运行环境不足。请关闭占用显卡的软件后重试；仍失败时改用 Whisper Small。"
     if any(
         marker in normalized
         for marker in ("no space left", "not enough space", "磁盘空间不足", "errno 28")
@@ -2076,6 +2092,7 @@ class LocalizerWindow:
         self._task_sources: list[str] = []
         self._task_states: dict[int, str] = {}
         self._task_errors: dict[int, str] = {}
+        self._task_log_tails: dict[int, deque[str]] = {}
         self._media_previews: dict[int, MediaPreview] = {}
         self._media_preview_errors: dict[int, str] = {}
         self._browser_capture_prompted_sources: set[str] = set()
@@ -3238,13 +3255,6 @@ class LocalizerWindow:
         if generation != self._analysis_generation or not sources:
             return
 
-        try:
-            route = current_route()
-        except LocalizerError as exc:
-            for index, _source in enumerate(sources, start=1):
-                self.events.put(("media_analysis_result", (generation, index, None, str(exc))))
-            return
-
         def worker() -> None:
             for index, source in enumerate(sources, start=1):
                 if generation != self._analysis_generation:
@@ -3254,6 +3264,7 @@ class LocalizerWindow:
                     continue
                 self.events.put(("media_analysis_started", (generation, index, source)))
                 try:
+                    route = route_for_sources([source])
                     with using_route(route):
                         preview = inspect_media_preview(source)
                 except (OSError, ValueError, LocalizerError) as exc:
@@ -3476,7 +3487,7 @@ class LocalizerWindow:
                     return
                 process = subprocess.Popen(
                     command,
-                    env=current_route().environment(),
+                    env=route_for_sources([source]).environment(),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -4217,7 +4228,7 @@ class LocalizerWindow:
             )
             for value in values
         ]
-        environment = current_route().environment()
+        environment = route_for_sources(values).environment()
         if provider == "openai-compatible" and subtitle_mode != "download_only":
             endpoint = self.endpoint.get().strip()
             model = self.model.get().strip()
@@ -4239,7 +4250,7 @@ class LocalizerWindow:
             return
         try:
             commands, environment, provider = self._validate()
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, LocalizerError) as exc:
             messagebox.showwarning("还不能开始", str(exc), parent=self.root)
             return
 
@@ -4306,7 +4317,11 @@ class LocalizerWindow:
         if not commands:
             return
 
-        environment = current_route().environment(environment)
+        try:
+            environment = route_for_sources([command[3] for command in commands]).environment(environment)
+        except LocalizerError as exc:
+            messagebox.showwarning("网络设置需要修复", str(exc), parent=self.root)
+            return
 
         resolved_task_indices = task_indices or tuple(range(1, len(commands) + 1))
         if len(resolved_task_indices) != len(commands):
@@ -4315,6 +4330,7 @@ class LocalizerWindow:
         if not preserve_task_center:
             self._replace_task_sources(queue_sources, schedule_analysis=False)
         for index in resolved_task_indices:
+            self._task_log_tails[index] = deque(maxlen=120)
             self._update_task_row(index, state_code="queued", progress="0%", error="")
         self._clear_log()
         self._show_log()
@@ -4633,6 +4649,7 @@ class LocalizerWindow:
                 event, payload = self.events.get_nowait()
                 if event == "line":
                     index, position, total, line = payload  # type: ignore[misc]
+                    self._task_log_tails.setdefault(int(index), deque(maxlen=120)).append(str(line)[-32768:])
                     prefix = f"[队列 {position}/{total} · 任务 {index}] " if int(total) > 1 else ""
                     self._append_log(prefix + str(line))
                     self._update_progress_from_output(
@@ -4784,11 +4801,13 @@ class LocalizerWindow:
                         )
                     elif not self.stop_requested:
                         self._update_task_row(
-                            int(index), state_code="failed", error="请查看运行记录和诊断包"
+                            int(index), state_code="failed",
+                            error=friendly_failure_summary("".join(self._task_log_tails.get(int(index), ()))),
                         )
                         root = self._project_paths_by_queue_index.get(int(index))
                         if root is not None:
                             self._create_failure_support_bundle_async(int(index), root)
+                    self._task_log_tails.pop(int(index), None)
                 elif event == "failure_bundle":
                     index, _root, bundle, error = payload  # type: ignore[misc]
                     if bundle is not None:
@@ -4962,7 +4981,14 @@ class LocalizerWindow:
                 f"队列完成：{successful}/{total} 个任务成功，请查看上方日志",
                 "error",
             )
-            recovery = friendly_failure_summary(self.log.get("1.0", "end"))
+            recoveries = [
+                f"任务 {index}：{self._task_errors[index]}"
+                for index in retry_indices
+                if self._task_states.get(index) == "failed" and self._task_errors.get(index)
+            ]
+            recovery = "\n".join(recoveries[:5]) or "请查看失败任务对应的运行记录和诊断包。"
+            if len(recoveries) > 5:
+                recovery += f"\n另有 {len(recoveries) - 5} 个失败任务，请在队列查看各自原因。"
             paused_summary = f"，另有 {paused_count} 个已暂停" if paused_count else ""
             messagebox.showerror(
                 "部分任务未完成",

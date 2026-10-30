@@ -31,6 +31,8 @@ _active: NetworkRoute | None = None
 
 
 def normalize_proxy(value: str) -> str:
+    if not isinstance(value, str):
+        raise InputValidationError("代理地址格式无效，请在“网络与连接”重新填写地址。")
     value = value.strip()
     if not value or any(c.isspace() for c in value):
         raise InputValidationError("请填写代理地址，例如 http://127.0.0.1:7890。")
@@ -65,8 +67,10 @@ class NetworkSettings:
     proxy: str = ""
 
     def validated(self) -> NetworkSettings:
-        if self.mode not in {"direct", "system", "manual"}:
+        if not isinstance(self.mode, str) or self.mode not in {"direct", "system", "manual"}:
             raise InputValidationError("未知网络模式。")
+        if not isinstance(self.proxy, str):
+            raise InputValidationError("代理设置格式无效，请在“网络与连接”重新保存。")
         return NetworkSettings(
             self.mode, normalize_proxy(self.proxy) if self.mode == "manual" else ""
         )
@@ -166,9 +170,12 @@ def current_route() -> NetworkRoute:
             try:
                 payload = json.loads(snapshot)
                 mode = payload["mode"]
-                if mode not in {"system", "direct", "manual"}:
+                if not isinstance(mode, str) or mode not in {"system", "direct", "manual"}:
                     raise ValueError
-                proxy = normalize_proxy(payload["proxy"]) if payload["proxy"] else ""
+                raw_proxy = payload["proxy"]
+                if not isinstance(raw_proxy, str):
+                    raise ValueError
+                proxy = normalize_proxy(raw_proxy) if raw_proxy else ""
                 if (mode == "direct" and proxy) or (mode == "manual" and not proxy):
                     raise ValueError
                 _active = NetworkRoute(mode, proxy)
@@ -179,6 +186,28 @@ def current_route() -> NetworkRoute:
         else:
             _active = resolve_route(load_network_settings())
     return _active
+
+
+def route_for_sources(sources: list[str]) -> NetworkRoute:
+    """A wholly local job must not depend on proxy configuration being readable.
+
+    Project directories bypass media networking only when a downloaded source is
+    present. Missing remote assets still require the configured route, fail closed.
+    """
+    def local(source: str) -> bool:
+        if source.lower().startswith(("http://", "https://")):
+            return False
+        try:
+            path = Path(source).expanduser()
+            return path.is_file() or (
+                path.is_dir() and any(p.is_file() for p in (path / "source").glob("source_video.*"))
+            )
+        except (OSError, ValueError):
+            return False
+
+    if sources and all(local(source) for source in sources):
+        return NetworkRoute("direct")
+    return current_route()
 
 
 def save_network_settings(settings: NetworkSettings, path: Path | None = None) -> NetworkRoute:
