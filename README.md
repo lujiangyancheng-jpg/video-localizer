@@ -13,7 +13,7 @@
 [![Windows quality gate](https://github.com/lujiangyancheng-jpg/video-localizer/actions/workflows/ci.yml/badge.svg)](https://github.com/lujiangyancheng-jpg/video-localizer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/lujiangyancheng-jpg/video-localizer)](LICENSE)
 
-[**下载 v0.7.0.17 Standard 正式版**](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.17/YouTube-Chinese-Localizer-0.7.0.17-Standard-Offline-Setup.exe)
+[**下载 v0.7.0.18 Standard 正式版**](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.18/YouTube-Chinese-Localizer-0.7.0.18-Standard-Offline-Setup.exe)
 · [使用说明](docs/USER_GUIDE.zh-CN.md)
 · [参加测试](docs/TESTING_GUIDE.zh-CN.md)
 · [讨论与求助](https://github.com/lujiangyancheng-jpg/video-localizer/discussions)
@@ -41,7 +41,7 @@
 
 ## 三步开始
 
-1. 下载单文件 [Standard Setup.exe](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.17/YouTube-Chinese-Localizer-0.7.0.17-Standard-Offline-Setup.exe)。
+1. 下载单文件 [Standard Setup.exe](https://github.com/lujiangyancheng-jpg/video-localizer/releases/download/v0.7.0.18/YouTube-Chinese-Localizer-0.7.0.18-Standard-Offline-Setup.exe)。
 2. 安装时按需选择 Whisper Small、Whisper Medium、Local AI 和 AI 超分辨率。全新安装默认勾选 Whisper Small；只下载勾选的组件，已有组件升级时不会重复下载。
 3. 打开 **Localize Studio**，粘贴一个或多个链接，确认预分析信息后点击“开始本地化”。
 
@@ -52,7 +52,7 @@
 | 更自然的中英字幕 | Standard + Whisper + Local AI | 不需要 |
 | 日、韩、西、法、德、葡、俄、阿字幕 | Whisper + Local AI，或兼容 API | 两种方案任选 |
 
-**Standard v0.7.0.17 正式版基础包约 289 MiB**，内含程序、Python、精简 FFmpeg、字幕字体、硬件编码支持和两套中英快速翻译模型。Whisper、Local AI 与 AI 超分辨率是可选包；超分组件不塞进基础包。前三段版本相同的程序共用模型，例如 `0.7.0.17` 继续使用 `0.7.0` 组件包。
+**Standard v0.7.0.18 正式版基础包约 289 MiB**，内含程序、Python、精简 FFmpeg、字幕字体、硬件编码支持和两套中英快速翻译模型。Whisper、Local AI 与 AI 超分辨率是可选包；超分组件不塞进基础包。前三段版本相同的程序共用模型，例如 `0.7.0.18` 继续使用 `0.7.0` 组件包。
 
 当前 Windows 安装包尚未使用商业代码签名证书，因此浏览器或 SmartScreen 可能显示来源提示。请只从本仓库的 GitHub Release 下载，并核对 Release 同页提供的 SHA-256。
 
@@ -76,12 +76,13 @@
 - 有明确故障或功能建议：创建 [Issue](https://github.com/lujiangyancheng-jpg/video-localizer/issues/new/choose)。
 - 能修改代码、文档或测试：阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，从带有 `good first issue` 或 `help wanted` 标签的任务开始。
 - 每一版做了什么：[CHANGELOG.md](CHANGELOG.md)；安装与模型说明：[docs/INSTALLATION.zh-CN.md](docs/INSTALLATION.zh-CN.md)。
+- 后续如何推进：[分阶段开发路线](docs/ROADMAP.zh-CN.md)。下一阶段先验证短片配音，本版尚未提供自动配音或声音克隆。
 
 适合视频学习者、独立创作者、课程/采访/播客编辑和需要可审计项目文件的本地化团队。不适合批量搬运、无人值守转载、规避平台限制，或处理未获授权的内容。
 
 ## 当前状态
 
-`0.7.0.17` 增加统一媒体线路与连接诊断：平台登录、播放页解析、媒体探测和下载使用同一选定代理，切换后使旧线路解析缓存失效；限流重试降并发并退避。保留 B站／抖音入口、独立下载组件更新、可取消超分预览、段落字幕审核与组件修复。新安装默认使用稳定更新通道。软件不提供代理服务、不自动轮换出口 IP，也不会把 403 一律认定为封 IP。平台支持仍受上游接口、账号权限和限流影响，不能保证每条视频均可下载。
+`0.7.0.18` 增加统一媒体线路与连接诊断：平台登录、播放页解析、媒体探测和下载使用同一选定代理，切换后使旧线路解析缓存失效；限流重试降并发并退避。保留 B站／抖音入口、独立下载组件更新、可取消超分预览、段落字幕审核与组件修复。新安装默认使用稳定更新通道。软件不提供代理服务、不自动轮换出口 IP，也不会把 403 一律认定为封 IP。平台支持仍受上游接口、账号权限和限流影响，不能保证每条视频均可下载。
 
 “视频平台”菜单集中提供账号登录、B站分P列表、当前可用画质和下载引擎更新。登录通过独立 Edge 窗口在官方网站完成；仅保存对应平台的会话，并使用 Windows DPAPI 加密。若会话过期可刷新或清除；无需把账号密码输入本软件。通用“浏览器抓取”仍是独立的公开媒体 URL 捕获功能。
 

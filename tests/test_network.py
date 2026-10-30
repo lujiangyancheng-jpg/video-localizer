@@ -108,6 +108,42 @@ def test_network_settings_are_user_local_and_corruption_is_not_silent(tmp_path):
         read_settings(path)
 
 
+@pytest.mark.parametrize("payload", [
+    {"mode": "manual", "proxy": 123}, {"mode": [], "proxy": ""},
+    {"mode": "direct", "proxy": False}, {"mode": "manual", "proxy": {}},
+    [], None,
+])
+def test_malformed_settings_always_produce_actionable_errors(tmp_path, payload):
+    path = tmp_path / "network.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(InputValidationError):
+        read_settings(path)
+
+
+@pytest.mark.parametrize("payload", [
+    {"mode": [], "proxy": ""}, {"mode": "manual", "proxy": 0},
+    {"mode": "direct", "proxy": False},
+])
+def test_malformed_worker_snapshot_fails_closed(monkeypatch, payload):
+    monkeypatch.setenv(network.ROUTE_ENV, json.dumps(payload))
+    with pytest.raises(InputValidationError):
+        network.current_route()
+
+
+def test_local_media_and_downloaded_projects_ignore_broken_proxy(tmp_path):
+    video = tmp_path / "local.mp4"
+    video.touch()
+    project = tmp_path / "project"
+    (project / "source").mkdir(parents=True)
+    (project / "source" / "source_video.mp4").touch()
+    with patch.object(network, "current_route", side_effect=InputValidationError("broken proxy")):
+        assert network.route_for_sources([str(video), str(project)]) == NetworkRoute("direct")
+        with pytest.raises(InputValidationError):
+            network.route_for_sources([str(video), "https://media.test/video.mp4"])
+        with pytest.raises(InputValidationError):
+            network.route_for_sources([str(tmp_path / "missing-remote-project")])
+
+
 @pytest.mark.parametrize(
     ("error", "code"),
     [
